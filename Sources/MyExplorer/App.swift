@@ -148,7 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 return
             }
             if restartingForUpdate, let updater {
-                do { try updater.installForRestart() }
+                do { try await updater.installForRestart() }
                 catch {
                     restartingForUpdate = false
                     terminationRequested = false

@@ -426,5 +426,10 @@
 "updates.skip" = "Diese Version überspringen";
 "updates.deferred" = "Updateprüfung um sieben Tage verschoben.";
 "updates.skipped" = "Diese Version wurde übersprungen.";
-"updates.downloading" = "Update wird geladen und geprüft…";
+"updates.downloading" = "Update wird heruntergeladen…";
 "updates.check_now" = "Jetzt prüfen";
+"updates.progress_title" = "My Explorer wird auf Version %@ aktualisiert";
+"updates.verifying" = "Update wird geprüft und vorbereitet…";
+"updates.waiting" = "Dateivorgang wird abgeschlossen…";
+"updates.installing" = "Update wird installiert…";
+"updates.reopening" = "My Explorer wird neu geöffnet…";

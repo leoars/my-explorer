@@ -426,5 +426,10 @@
 "updates.skip" = "Skip this version";
 "updates.deferred" = "Update checks postponed for seven days.";
 "updates.skipped" = "This version was skipped.";
-"updates.downloading" = "Downloading and verifying the update…";
+"updates.downloading" = "Downloading the update…";
 "updates.check_now" = "Check now";
+"updates.progress_title" = "Updating My Explorer to version %@";
+"updates.verifying" = "Verifying and preparing the update…";
+"updates.waiting" = "Waiting for the file operation to finish…";
+"updates.installing" = "Installing the update…";
+"updates.reopening" = "Reopening My Explorer…";

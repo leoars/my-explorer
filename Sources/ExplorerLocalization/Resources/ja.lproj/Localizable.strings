@@ -426,5 +426,10 @@
 "updates.skip" = "このバージョンをスキップ";
 "updates.deferred" = "アップデートの確認を7日間延期しました。";
 "updates.skipped" = "このバージョンをスキップしました。";
-"updates.downloading" = "アップデートをダウンロードして検証中…";
+"updates.downloading" = "アップデートをダウンロード中…";
 "updates.check_now" = "今すぐ確認";
+"updates.progress_title" = "My Explorer をバージョン %@ にアップデート中";
+"updates.verifying" = "アップデートを検証して準備中…";
+"updates.waiting" = "ファイル操作の完了を待機中…";
+"updates.installing" = "アップデートをインストール中…";
+"updates.reopening" = "My Explorer を再起動中…";

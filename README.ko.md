@@ -8,7 +8,7 @@ My Explorer는 macOS용 네이티브 파일 관리자입니다. Windows 파일 �
 
 ## 서명된 앱 설치
 
-시험 버전 DMG를 열고 **My Explorer**를 **응용 프로그램**에 복사한 뒤 이미지를 추출하고 앱을 여세요. 버전 26는 Apple Development로 서명되었으며 공증되지 않았습니다. [GitHub Releases](https://github.com/leoars/my-explorer/releases/tag/v0.1.0-private-beta.11-build26)
+시험 버전 DMG를 열고 **My Explorer**를 **응용 프로그램**에 복사한 뒤 이미지를 추출하고 앱을 여세요. 버전 27는 Apple Development로 서명되었으며 공증되지 않았습니다. [GitHub Releases](https://github.com/leoars/my-explorer/releases/tag/v0.1.0-private-beta.12-build27)
 
 ## 빌드 및 설치
 

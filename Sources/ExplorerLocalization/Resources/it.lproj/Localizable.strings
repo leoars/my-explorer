@@ -426,5 +426,10 @@
 "updates.skip" = "Salta questa versione";
 "updates.deferred" = "Verifica rinviata di sette giorni.";
 "updates.skipped" = "Questa versione è stata saltata.";
-"updates.downloading" = "Download e verifica dell’aggiornamento…";
+"updates.downloading" = "Download dell’aggiornamento…";
 "updates.check_now" = "Verifica ora";
+"updates.progress_title" = "Aggiornamento di My Explorer alla versione %@";
+"updates.verifying" = "Verifica e preparazione dell’aggiornamento…";
+"updates.waiting" = "In attesa del completamento dell’operazione sui file…";
+"updates.installing" = "Installazione dell’aggiornamento…";
+"updates.reopening" = "Riapertura di My Explorer…";

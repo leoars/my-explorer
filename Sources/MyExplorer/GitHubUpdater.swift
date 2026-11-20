@@ -4,7 +4,7 @@ import ExplorerCore
 
 private enum UpdateError: Error { case access, invalid }
 
-private final class UpdateRedirects: NSObject, URLSessionTaskDelegate {
+private class UpdateRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         guard let url = request.url, url.scheme == "https",
@@ -15,6 +15,20 @@ private final class UpdateRedirects: NSObject, URLSessionTaskDelegate {
     }
 }
 
+// Use the same redirect policy for the download as for release metadata.
+private final class DownloadProgressObserver: UpdateRedirects, @unchecked Sendable {
+    private let received: @Sendable (Int64) -> Void
+    private var observation: NSKeyValueObservation?
+
+    init(received: @escaping @Sendable (Int64) -> Void) { self.received = received }
+
+    func urlSession(_ session: URLSession, didCreateTask task: URLSessionTask) {
+        observation = task.progress.observe(\.completedUnitCount, options: [.new]) { [received] progress, _ in
+            received(progress.completedUnitCount)
+        }
+    }
+}
+
 @MainActor
 final class GitHubUpdater {
     private let preferences: UpdateCheckPreferences
@@ -22,11 +36,13 @@ final class GitHubUpdater {
     private let session: URLSession
     private var task: Task<Void, Never>?
     private var staged: URL?
+    private var progress: UpdateProgressController?
     private weak var prompt: NSAlert?
     var requestRestart: (() -> Void)?
     var changed: (() -> Void)?
     private(set) var status = "updates.idle" { didSet { changed?() } }
-    var canCheckNow: Bool { status != "updates.checking" && status != "updates.downloading" }
+    var canChangePreference: Bool { status != "updates.installing" && status != "updates.reopening" }
+    var canCheckNow: Bool { status != "updates.checking" && progress == nil }
     var enabled: Bool { preferences.enabled }
 
     init(defaults: UserDefaults = .standard, app: URL = Bundle.main.bundleURL) {
@@ -84,42 +100,60 @@ final class GitHubUpdater {
                     preferences.skip(build: candidate.build)
                     status = "updates.skipped"
                 case .alertFirstButtonReturn:
+                    let panel = UpdateProgressController(version: candidate.build, totalBytes: candidate.asset.size)
+                    progress = panel
                     status = "updates.downloading"
-                    let result = try await download(candidate)
+                    panel.showWindow(nil)
+                    let result = try await download(candidate, panel: panel)
                     if Task.isCancelled {
                         try? FileManager.default.removeItem(at: result.deletingLastPathComponent())
                         return
                     }
                     staged = result
+                    if FileCommands.shared.isBusy { showPhase("updates.waiting") }
                     while let operation = FileCommands.shared.task {
                         await operation.value
                         try Task.checkCancellation()
                     }
+                    showPhase("updates.installing")
                     requestRestart?()
                 default: status = "updates.idle"
                 }
             } catch {
                 guard !Task.isCancelled else { return }
-                let wasDownloading = status == "updates.downloading"
+                let wasUpdating = progress != nil
+                dismissProgress()
                 status = (error as? UpdateError) == .access ? "updates.access" : "updates.failed"
-                if wasDownloading { reportFailure() }
+                if wasUpdating { reportFailure() }
             }
         }
     }
 
     func setEnabled(_ value: Bool) {
+        guard canChangePreference else { return }
         cancel()
         preferences.enabled = value
         start()
     }
 
     func cancel() {
+        dismissProgress()
         task?.cancel()
         if let window = prompt?.window { window.sheetParent?.endSheet(window, returnCode: .cancel) }
         prompt = nil
         if let staged { try? FileManager.default.removeItem(at: staged.deletingLastPathComponent()) }
         staged = nil
         status = "updates.idle"
+    }
+
+    private func dismissProgress() {
+        progress?.close()
+        progress = nil
+    }
+
+    private func showPhase(_ key: String) {
+        progress?.showPhase(key)
+        status = key
     }
 
     private let api = "https://api.github.com/repos/leoars/my-explorer/releases"
@@ -154,12 +188,16 @@ final class GitHubUpdater {
         return best
     }
 
-    private func download(_ best: Candidate) async throws -> URL {
-        let (file, response) = try await session.download(for: request(URL(string: api + "/assets/\(best.asset.id)")!, asset: true))
+    private func download(_ best: Candidate, panel: UpdateProgressController) async throws -> URL {
+        let observer = DownloadProgressObserver { [weak panel] bytes in
+            Task { @MainActor in panel?.received(bytes) }
+        }
+        let (file, response) = try await session.download(for: request(URL(string: api + "/assets/\(best.asset.id)")!, asset: true), delegate: observer)
         defer { try? FileManager.default.removeItem(at: file) }
         try validate(response)
         guard try file.resourceValues(forKeys: [.fileSizeKey]).fileSize == best.asset.size else { throw UpdateError.invalid }
         try Task.checkCancellation()
+        showPhase("updates.verifying")
         let app = self.app
         return try await Task.detached {
             let image = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".dmg")
@@ -168,10 +206,13 @@ final class GitHubUpdater {
             return try UpdateInstaller.stage(image: image, number: best.build, current: app)
         }.value
     }
-    func installForRestart() throws {
+    func installForRestart() async throws {
         guard let staged else { throw UpdateError.invalid }
-        try UpdateInstaller.install(staged, over: app)
-        cancel()
+        let app = self.app
+        try await Task.detached { try UpdateInstaller.install(staged, over: app) }.value
+        try? FileManager.default.removeItem(at: staged.deletingLastPathComponent())
+        self.staged = nil
+        showPhase("updates.reopening")
     }
 
     func reportFailure() {

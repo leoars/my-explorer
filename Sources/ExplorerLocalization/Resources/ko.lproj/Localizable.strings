@@ -426,5 +426,10 @@
 "updates.skip" = "이 버전 건너뛰기";
 "updates.deferred" = "업데이트 확인을 7일간 연기했습니다.";
 "updates.skipped" = "이 버전을 건너뛰었습니다.";
-"updates.downloading" = "업데이트 다운로드 및 검증 중…";
+"updates.downloading" = "업데이트 다운로드 중…";
 "updates.check_now" = "지금 확인";
+"updates.progress_title" = "My Explorer를 버전 %@로 업데이트 중";
+"updates.verifying" = "업데이트 확인 및 준비 중…";
+"updates.waiting" = "파일 작업이 끝나기를 기다리는 중…";
+"updates.installing" = "업데이트 설치 중…";
+"updates.reopening" = "My Explorer를 다시 여는 중…";

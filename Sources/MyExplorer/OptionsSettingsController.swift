@@ -48,6 +48,7 @@ final class OptionsSettingsController: DialogWindowController {
         let master = NSButton(title: L10n.text("vault.master"), target: self, action: #selector(configureMaster))
         updates.target = self
         updates.action = #selector(toggleUpdates)
+        updates.isEnabled = updater?.canChangePreference == true
         updates.state = updater?.enabled == true ? .on : .off
         updates.setAccessibilityIdentifier("options.automaticUpdates")
         let checkNow = NSButton(title: L10n.text("updates.check_now"), target: self, action: #selector(checkForUpdates))
@@ -59,6 +60,7 @@ final class OptionsSettingsController: DialogWindowController {
         updateStatus.stringValue = L10n.text(updater?.status ?? "updates.idle")
         updater?.changed = { [weak self] in
             guard let self, let updater = self.updater else { return }
+            self.updates.isEnabled = updater.canChangePreference
             checkNow.isEnabled = updater.canCheckNow
             self.updateStatus.stringValue = L10n.text(updater.status)
         }

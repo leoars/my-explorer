@@ -426,5 +426,10 @@
 "updates.skip" = "Ignorer cette version";
 "updates.deferred" = "Vérification reportée de sept jours.";
 "updates.skipped" = "Cette version a été ignorée.";
-"updates.downloading" = "Téléchargement et vérification en cours…";
+"updates.downloading" = "Téléchargement de la mise à jour…";
 "updates.check_now" = "Vérifier maintenant";
+"updates.progress_title" = "Mise à jour de My Explorer vers la version %@";
+"updates.verifying" = "Vérification et préparation de la mise à jour…";
+"updates.waiting" = "En attente de la fin de l’opération sur les fichiers…";
+"updates.installing" = "Installation de la mise à jour…";
+"updates.reopening" = "Réouverture de My Explorer…";
