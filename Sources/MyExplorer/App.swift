@@ -2053,6 +2053,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             guard let open = buttons.first(where: { $0.accessibilityIdentifier() == "explorer.command.open" }),
                   let copy = buttons.first(where: { $0.accessibilityIdentifier() == "explorer.command.copyPath" }),
                   buttons.count >= 10 else { throw SmokeFailure.failed("Toolbar style or actions missing") }
+            let controls = descendants(of: content).compactMap { $0 as? NSButton }
+            for id in ["explorer.viewMenu", "explorer.preview.ocr"] {
+                guard let control = controls.first(where: { $0.accessibilityIdentifier() == id }),
+                      let font = control.font, control.frame.height >= font.ascender - font.descender + 8 else {
+                    throw SmokeFailure.failed("Insufficient vertical padding: " + id)
+                }
+            }
             for button in buttons {
                 guard button.frame.height >= 28, button.target != nil, button.action != nil,
                       button.frame.height >= (button.font?.ascender ?? 0) - (button.font?.descender ?? 0) else {

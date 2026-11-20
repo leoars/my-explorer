@@ -13,7 +13,7 @@ final class PreviewPaneController: NSViewController {
     private let fileName = ExplorerStyle.label("", color: .secondaryLabelColor, area: .files)
     private let placeholder = NSTextField(wrappingLabelWithString: L10n.text("preview.empty"))
     private let previewContainer = NSView()
-    private let ocrButton = NSButton()
+    private let ocrButton = OutlinedButton()
     var onExtractText: ((URL) -> Void)?
     private var quickLook: QLPreviewView?
     private let imageView = NSImageView()
@@ -46,7 +46,6 @@ final class PreviewPaneController: NSViewController {
         placeholder.maximumNumberOfLines = 0
         placeholder.setAccessibilityIdentifier("explorer.preview.message")
         ocrButton.title = L10n.text("ocr.title")
-        ocrButton.bezelStyle = .rounded
         ocrButton.font = ExplorerStyle.font(.bars)
         ocrButton.target = self; ocrButton.action = #selector(extractText)
         ocrButton.isEnabled = false

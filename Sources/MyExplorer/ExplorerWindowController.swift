@@ -209,7 +209,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         mode.menu?.addItem(withTitle: L10n.text("options.title"), action: #selector(showOptions), keyEquivalent: "").target = self
         mode.menu?.addItem(withTitle: L10n.text("cloud.manage"), action: #selector(manageCloud), keyEquivalent: "").target = self
         mode.setAccessibilityLabel(L10n.text("menu.view"))
-        mode.font = ExplorerStyle.font(.bars)
+        mode.setAccessibilityIdentifier("explorer.viewMenu")
         if let menu = mode.menu { ExplorerStyle.configureMenu(menu) }
         languagePicker.addItems(withTitles: AppLanguage.allCases.map { $0 == .system ? L10n.text("language.system") : $0.nativeName })
         languagePicker.selectItem(at: AppLanguage.allCases.firstIndex(of: L10n.preferences.selection) ?? 0)
@@ -294,7 +294,12 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         guard view !== split else { return }
         if let field = view as? NSTextField { field.font = ExplorerStyle.font(.bars) }
         if let button = view as? NSButton { button.font = ExplorerStyle.font(.bars) }
-        if let picker = view as? NSPopUpButton, let menu = picker.menu { ExplorerStyle.configureMenu(menu) }
+        if let picker = view as? NSPopUpButton, let font = picker.font {
+            picker.bezelStyle = .regularSquare
+            picker.heightAnchor.constraint(greaterThanOrEqualToConstant: ceil(font.ascender - font.descender) + 12).isActive = true
+            picker.setContentCompressionResistancePriority(.required, for: .vertical)
+            if let menu = picker.menu { ExplorerStyle.configureMenu(menu) }
+        }
         for child in view.subviews { applyBarFonts(to: child) }
     }
 
