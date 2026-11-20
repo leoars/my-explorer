@@ -419,7 +419,7 @@
 "updates.failed" = "Error al actualizar. Selecciona Comprobar ahora para volver a intentarlo.";
 "updates.option" = "Buscar actualizaciones al iniciar";
 "updates.idle" = "Consulta GitHub al iniciar y pide confirmación antes de descargar.";
-"updates.offer" = "¿Actualizar My Explorer a la compilación %@?";
+"updates.offer" = "¿Actualizar My Explorer a la versión %@?";
 "updates.explanation" = "My Explorer descargará la actualización, la instalará y volverá a abrirse.";
 "updates.install" = "Actualizar ahora";
 "updates.later" = "Recordarme en 7 días";

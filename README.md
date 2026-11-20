@@ -8,7 +8,7 @@ My Explorer is a native macOS file manager. Its folder tree, tabs and Details vi
 
 ## Install the signed app
 
-Open the prerelease DMG, copy **My Explorer** to **Applications**, eject the image and open the app. Build 25 is Apple Development signed and has not been notarized. [GitHub Releases](https://github.com/leoars/my-explorer/releases/tag/v0.1.0-private-beta.10-build25)
+Open the prerelease DMG, copy **My Explorer** to **Applications**, eject the image and open the app. Version 26 is Apple Development signed and has not been notarized. [GitHub Releases](https://github.com/leoars/my-explorer/releases/tag/v0.1.0-private-beta.11-build26)
 
 ## Build and install
 

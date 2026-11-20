@@ -8,7 +8,7 @@ My Explorer は macOS 用のネイティブファイルマネージャーです�
 
 ## 署名済みアプリのインストール
 
-プレリリースの DMG を開き、**My Explorer** を「アプリケーション」にコピーしてから、ディスクイメージを取り出し、アプリを開きます。ビルド 25 は Apple Development で署名済みですが、公証されていません。 [GitHub Releases](https://github.com/leoars/my-explorer/releases/tag/v0.1.0-private-beta.10-build25)
+プレリリースの DMG を開き、**My Explorer** を「アプリケーション」にコピーしてから、ディスクイメージを取り出し、アプリを開きます。バージョン 26 は Apple Development で署名済みですが、公証されていません。 [GitHub Releases](https://github.com/leoars/my-explorer/releases/tag/v0.1.0-private-beta.11-build26)
 
 ## ビルドとインストール
 

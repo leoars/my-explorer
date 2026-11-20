@@ -419,7 +419,7 @@
 "updates.failed" = "Échec de la mise à jour. Sélectionnez Vérifier maintenant pour réessayer.";
 "updates.option" = "Rechercher les mises à jour au démarrage";
 "updates.idle" = "Consulte GitHub au démarrage et demande confirmation avant le téléchargement.";
-"updates.offer" = "Mettre à jour My Explorer vers la build %@ ?";
+"updates.offer" = "Mettre à jour My Explorer vers la version %@ ?";
 "updates.explanation" = "My Explorer va télécharger la mise à jour, l’installer et redémarrer.";
 "updates.install" = "Mettre à jour maintenant";
 "updates.later" = "Me rappeler dans 7 jours";

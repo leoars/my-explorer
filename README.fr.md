@@ -8,7 +8,7 @@ My Explorer est un gestionnaire de fichiers natif pour macOS. Il associe l’arb
 
 ## Installer l’application signée
 
-Ouvrez le DMG de la préversion, copiez **My Explorer** dans **Applications**, éjectez l’image et ouvrez l’application. Le build 25 porte une signature Apple Development et n’a pas été notarié. [GitHub Releases](https://github.com/leoars/my-explorer/releases/tag/v0.1.0-private-beta.10-build25)
+Ouvrez le DMG de la préversion, copiez **My Explorer** dans **Applications**, éjectez l’image et ouvrez l’application. La version 26 porte une signature Apple Development et n’a pas été notarié. [GitHub Releases](https://github.com/leoars/my-explorer/releases/tag/v0.1.0-private-beta.11-build26)
 
 ## Compiler et installer
 

@@ -419,7 +419,7 @@
 "updates.failed" = "アップデートに失敗しました。「今すぐ確認」で再試行してください。";
 "updates.option" = "起動時にアップデートを確認";
 "updates.idle" = "起動時に GitHub を確認し、ダウンロード前に確認します。";
-"updates.offer" = "My Explorer をビルド %@ にアップデートしますか？";
+"updates.offer" = "My Explorer をバージョン %@ にアップデートしますか？";
 "updates.explanation" = "アップデートをダウンロードしてインストールし、My Explorer を再起動します。";
 "updates.install" = "今すぐアップデート";
 "updates.later" = "7日後に通知";

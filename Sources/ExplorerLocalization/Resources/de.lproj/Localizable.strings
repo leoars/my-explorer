@@ -419,7 +419,7 @@
 "updates.failed" = "Update fehlgeschlagen. Wählen Sie „Jetzt prüfen“, um es erneut zu versuchen.";
 "updates.option" = "Beim Start nach Updates suchen";
 "updates.idle" = "Prüft GitHub beim Start und fragt vor dem Download nach.";
-"updates.offer" = "My Explorer auf Build %@ aktualisieren?";
+"updates.offer" = "My Explorer auf Version %@ aktualisieren?";
 "updates.explanation" = "My Explorer lädt das Update herunter, installiert es und startet neu.";
 "updates.install" = "Jetzt aktualisieren";
 "updates.later" = "In 7 Tagen erinnern";

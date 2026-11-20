@@ -419,7 +419,7 @@
 "updates.failed" = "Aggiornamento non riuscito. Scegli Verifica ora per riprovare.";
 "updates.option" = "Cerca aggiornamenti all’avvio";
 "updates.idle" = "Controlla GitHub all’avvio e chiede conferma prima del download.";
-"updates.offer" = "Aggiornare My Explorer alla build %@?";
+"updates.offer" = "Aggiornare My Explorer alla versione %@?";
 "updates.explanation" = "My Explorer scaricherà e installerà l’aggiornamento, quindi si riaprirà.";
 "updates.install" = "Aggiorna ora";
 "updates.later" = "Ricordamelo tra 7 giorni";

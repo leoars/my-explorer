@@ -419,7 +419,7 @@
 "updates.failed" = "Update failed. Choose Check now to retry.";
 "updates.option" = "Check for updates at startup";
 "updates.idle" = "Checks GitHub at startup and asks before downloading.";
-"updates.offer" = "Update My Explorer to build %@?";
+"updates.offer" = "Update My Explorer to version %@?";
 "updates.explanation" = "My Explorer will download the update, install it and reopen.";
 "updates.install" = "Update now";
 "updates.later" = "Remind me in 7 days";

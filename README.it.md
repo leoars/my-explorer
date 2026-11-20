@@ -8,7 +8,7 @@ My Explorer è un gestore di file nativo per macOS. Unisce l’albero delle cart
 
 ## Installare l’app firmata
 
-Apri il DMG della versione preliminare, copia **My Explorer** in **Applicazioni**, espelli l’immagine e apri l’app. La build 25 ha una firma Apple Development e non è stata autenticata tramite notarizzazione. [GitHub Releases](https://github.com/leoars/my-explorer/releases/tag/v0.1.0-private-beta.10-build25)
+Apri il DMG della versione preliminare, copia **My Explorer** in **Applicazioni**, espelli l’immagine e apri l’app. La versione 26 ha una firma Apple Development e non è stata autenticata tramite notarizzazione. [GitHub Releases](https://github.com/leoars/my-explorer/releases/tag/v0.1.0-private-beta.11-build26)
 
 ## Compilare e installare
 

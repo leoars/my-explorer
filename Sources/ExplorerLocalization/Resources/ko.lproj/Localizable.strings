@@ -419,7 +419,7 @@
 "updates.failed" = "업데이트에 실패했습니다. 지금 확인을 선택하여 다시 시도하세요.";
 "updates.option" = "시작할 때 업데이트 확인";
 "updates.idle" = "시작할 때 GitHub를 확인하고 다운로드 전에 묻습니다.";
-"updates.offer" = "My Explorer를 빌드 %@ 버전으로 업데이트할까요?";
+"updates.offer" = "My Explorer를 버전 %@로 업데이트할까요?";
 "updates.explanation" = "업데이트를 다운로드하여 설치하고 My Explorer를 다시 엽니다.";
 "updates.install" = "지금 업데이트";
 "updates.later" = "7일 후에 알림";

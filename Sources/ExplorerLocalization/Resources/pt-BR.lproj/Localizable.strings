@@ -419,7 +419,7 @@
 "updates.failed" = "Falha na atualização. Tente novamente em Verificar agora.";
 "updates.option" = "Verificar novas versões ao abrir";
 "updates.idle" = "Consulta o GitHub ao abrir e pede confirmação antes de baixar.";
-"updates.offer" = "Atualizar o My Explorer para o build %@?";
+"updates.offer" = "Atualizar o My Explorer para a versão %@?";
 "updates.explanation" = "O My Explorer vai baixar a atualização, instalá-la e reabrir.";
 "updates.install" = "Atualizar agora";
 "updates.later" = "Lembrar em 7 dias";
