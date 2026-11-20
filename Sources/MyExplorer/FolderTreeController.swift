@@ -1,0 +1,380 @@
+// SPDX-License-Identifier: Apache-2.0
+import AppKit
+import ExplorerCore
+import ExplorerClipboard
+
+@MainActor
+final class FolderOutlineView: NSOutlineView {
+    var contextMenuForRow: ((Int) -> NSMenu?)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = convert(event.locationInWindow, from: nil)
+        return contextMenuForRow?(row(at: point))
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 109, event.modifierFlags.contains(.shift),
+           selectedRow >= 0, let menu = contextMenuForRow?(selectedRow) {
+            let rect = rect(ofRow: selectedRow)
+            menu.popUp(positioning: nil, at: NSPoint(x: rect.minX + 20, y: rect.maxY), in: self)
+        } else { super.keyDown(with: event) }
+    }
+}
+
+@MainActor
+final class FolderNode: NSObject {
+    let url: URL
+    var title: String
+    let symbol: String
+    var volume: VolumeMount?
+    var volumeLink = false
+    let isGroup: Bool
+    var children: [FolderNode]?
+    var loading = false
+    var needsRefresh = false
+    var failure: DirectoryFailure?
+    var request = 0
+    var task: Task<Void, Never>?
+    var refreshTask: Task<Void, Never>?
+    var watcher: DirectoryWatcher?
+
+    init(url: URL, title: String? = nil, symbol: String = "folder", isGroup: Bool = false) {
+        self.url = url
+        self.title = title ?? url.lastPathComponent
+        self.symbol = symbol
+        self.isGroup = isGroup
+    }
+
+    func stopObserving() {
+        request += 1
+        task?.cancel(); task = nil
+        refreshTask?.cancel(); refreshTask = nil
+        watcher?.stop(); watcher = nil
+        loading = false
+        needsRefresh = false
+        children?.forEach { $0.stopObserving() }
+    }
+}
+
+@MainActor
+final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate {
+    let outline = FolderOutlineView()
+    let scrollView = NSScrollView()
+    var onNavigate: ((URL) -> Void)?
+    var onVolumeProperties: ((URL, VolumeMount?) -> Void)?
+    var onManageCloud: (() -> Void)?
+    private var roots: [FolderNode]
+    private let cloudRoot: FolderNode
+    private var hidden = false
+    private var generation = 0
+    private var selecting = false
+    private var gitSnapshot: GitStatusSnapshot?
+    private var gitRoots: Set<String> = []
+    func updateGit(snapshot: GitStatusSnapshot?, roots: Set<String>) {
+        gitSnapshot = snapshot; gitRoots = roots
+        outline.reloadData(forRowIndexes: IndexSet(integersIn: 0..<outline.numberOfRows), columnIndexes: IndexSet(integer: 0))
+    }
+
+    init(home: URL) {
+        cloudRoot = FolderNode(url: URL(string: "myexplorer-cloud:///")!, title: L10n.text("cloud.title"), symbol: "cloud.fill", isGroup: true)
+        roots = [
+            FolderNode(url: home, title: L10n.text("tree.home"), symbol: "house"),
+            FolderNode(url: home.appendingPathComponent("Desktop"), title: L10n.text("tree.desktop"), symbol: "desktopcomputer"),
+            FolderNode(url: home.appendingPathComponent("Downloads"), title: L10n.text("tree.downloads"), symbol: "arrow.down.circle"),
+            FolderNode(url: home.appendingPathComponent("Documents"), title: L10n.text("tree.documents"), symbol: "doc"),
+            FolderNode(url: home.appendingPathComponent("Pictures"), title: L10n.text("tree.pictures"), symbol: "photo.fill"),
+            FolderNode(url: home.appendingPathComponent("Music"), title: L10n.text("tree.music"), symbol: "music.note"),
+            FolderNode(url: home.appendingPathComponent("Movies"), title: L10n.text("tree.videos"), symbol: "film.fill"),
+            FolderNode(url: URL(fileURLWithPath: "/"), title: L10n.text("tree.computer"), symbol: "internaldrive"),
+            FolderNode(url: URL(fileURLWithPath: "/Volumes"), title: L10n.text("tree.volumes"), symbol: "externaldrive")
+        ]
+        roots.append(cloudRoot)
+        super.init()
+        outline.contextMenuForRow = { [weak self] row in self?.contextMenu(for: row) }
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("folders"))
+        outline.addTableColumn(column)
+        outline.outlineTableColumn = column
+        outline.headerView = nil
+        outline.rowHeight = max(30, ExplorerStyle.preferences.fontSize(for: .tree) + 12)
+        outline.indentationPerLevel = 16
+        outline.style = .plain
+        outline.backgroundColor = .windowBackgroundColor
+        outline.dataSource = self
+        outline.delegate = self
+        outline.registerForDraggedTypes(FileClipboard.dragTypes)
+        outline.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
+        outline.setDraggingSourceOperationMask(.copy, forLocal: false)
+        outline.setAccessibilityLabel(L10n.text("tree.accessibility"))
+        scrollView.documentView = outline
+        scrollView.hasVerticalScroller = true
+        scrollView.drawsBackground = false
+        outline.setAccessibilityIdentifier("explorer.tree")
+        reloadCloudConnections()
+        CloudAccounts.shared.onChange = { [weak self] in self?.reloadCloudConnections() }
+    }
+
+    private func contextMenu(for row: Int) -> NSMenu? {
+        guard row >= 0, let node = outline.item(atRow: row) as? FolderNode,
+              node.volume != nil || node.url.path == "/" && node.url.isFileURL else { return nil }
+        let menu = NSMenu()
+        let item = menu.addItem(withTitle: L10n.text("command.properties"), action: #selector(volumeProperties(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = (node.url, node.volume)
+        ExplorerStyle.configureMenu(menu)
+        return menu
+    }
+
+    @objc private func volumeProperties(_ sender: NSMenuItem) {
+        guard let (url, mount) = sender.representedObject as? (URL, VolumeMount?) else { return }
+        onVolumeProperties?(url, mount)
+    }
+
+    private func reloadCloudConnections() {
+        let previous = Dictionary((cloudRoot.children ?? []).map { ($0.url.explorerIdentity, $0) }, uniquingKeysWith: { first, _ in first })
+        cloudRoot.children = CloudAccounts.shared.connections.map { connection in
+            let url = RemoteLocation.url(connectionID: connection.id)
+            let node = previous[url.explorerIdentity] ?? FolderNode(url: url, symbol: "cloud.\(connection.provider.rawValue)")
+            node.title = connection.name
+            return node
+        }
+        selecting = true
+        outline.reloadItem(cloudRoot, reloadChildren: true)
+        if !(cloudRoot.children?.isEmpty ?? true) { outline.expandItem(cloudRoot) }
+        selecting = false
+    }
+
+    func setShowHidden(_ value: Bool) {
+        guard hidden != value else { return }
+        hidden = value
+        resetListing()
+    }
+
+    func resetListing() {
+        generation += 1
+        roots.forEach { $0.stopObserving() }
+        for root in roots { root.children = nil; root.loading = false; root.failure = nil }
+        reloadCloudConnections()
+        selecting = true
+        outline.collapseItem(nil, collapseChildren: true)
+        outline.reloadData()
+        selecting = false
+    }
+
+    func relocalize() {
+        let keys = ["tree.home", "tree.desktop", "tree.downloads", "tree.documents", "tree.pictures", "tree.music", "tree.videos", "tree.computer", "tree.volumes"]
+        for (node, key) in zip(roots, keys) { node.title = L10n.text(key) }
+        cloudRoot.title = L10n.text("cloud.title")
+        outline.setAccessibilityLabel(L10n.text("tree.accessibility"))
+        outline.rowHeight = max(30, ExplorerStyle.preferences.fontSize(for: .tree) + 12)
+        outline.reloadData(forRowIndexes: IndexSet(integersIn: 0..<outline.numberOfRows), columnIndexes: IndexSet(integer: 0))
+    }
+
+    func selectIfVisible(_ url: URL) {
+        selecting = true
+        defer { selecting = false }
+        for row in 0..<outline.numberOfRows {
+            if let node = outline.item(atRow: row) as? FolderNode, node.url.explorerIdentity == url.explorerIdentity {
+                outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                return
+            }
+        }
+        outline.deselectAll(nil)
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
+        (item as? FolderNode)?.children?.count ?? (item == nil ? roots.count : 0)
+    }
+    func outlineView(_ outlineView: NSOutlineView, pasteboardWriterForItem item: Any) -> (any NSPasteboardWriting)? {
+        guard let node = item as? FolderNode, !node.isGroup, !node.url.explorerIsRoot else { return nil }
+        return FileClipboard.pasteboardWriter(for: node.url)
+    }
+    func outlineView(_ outlineView: NSOutlineView, validateDrop info: any NSDraggingInfo, proposedItem item: Any?,
+                     proposedChildIndex index: Int) -> NSDragOperation {
+        guard let node = item as? FolderNode, !node.isGroup else { return [] }
+        outlineView.setDropItem(node, dropChildIndex: NSOutlineViewDropOnItemIndex)
+        return FileDrop.operation(for: FileDrop.readURLs(from: info), to: node.url,
+                                  allowed: FileDrop.allowedOperations(for: info))
+    }
+    func outlineView(_ outlineView: NSOutlineView, acceptDrop info: any NSDraggingInfo, item: Any?, childIndex index: Int) -> Bool {
+        guard let node = item as? FolderNode, !node.isGroup else { return false }
+        let urls = FileDrop.readURLs(from: info)
+        let action = FileDrop.operation(for: urls, to: node.url, allowed: FileDrop.allowedOperations(for: info))
+        guard action == .copy || action == .move else { return false }
+        FileCommands.shared.transfer(urls, to: node.url, move: action == .move)
+        return FileCommands.shared.task != nil
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+        if let node = item as? FolderNode { return node.children![index] }
+        return roots[index]
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
+        // Empty folders can receive new children; keep them retryable and observable.
+        (item as? FolderNode).map { !$0.volumeLink } ?? false
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, shouldExpandItem item: Any) -> Bool {
+        guard let node = item as? FolderNode else { return false }
+        if node.volumeLink { return false }
+        if node.isGroup { return true }
+        if node.children != nil {
+            let stale = node.url.isFileURL && node.watcher == nil
+            observe(node)
+            if stale { load(node, expand: false) }
+            return true
+        }
+        guard !node.loading else { return false }
+        load(node, expand: true)
+        return false
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, shouldCollapseItem item: Any) -> Bool {
+        (item as? FolderNode)?.stopObserving()
+        return true
+    }
+
+    private func observe(_ node: FolderNode) {
+        guard node.url.isFileURL else { return }
+        guard node.watcher == nil else { return }
+        let watcher = DirectoryWatcher()
+        node.watcher = watcher
+        watcher.watch(node.url) { [weak self, weak node] in
+            guard let self, let node, self.outline.isItemExpanded(node) || node.loading, node.refreshTask == nil else { return }
+            node.refreshTask = Task { [weak self, weak node] in
+                try? await Task.sleep(for: .milliseconds(150))
+                guard !Task.isCancelled, let self, let node else { return }
+                node.refreshTask = nil
+                guard self.outline.isItemExpanded(node) || node.loading else { return }
+                self.load(node, expand: !self.outline.isItemExpanded(node))
+            }
+        }
+    }
+
+    private func expandedNodes(under nodes: [FolderNode]) -> [FolderNode] {
+        nodes.flatMap { node in
+            (outline.isItemExpanded(node) ? [node] : []) + expandedNodes(under: node.children ?? [])
+        }
+    }
+
+    /// Refresh expanded nodes and invalidate collapsed caches without losing valid expansion identities.
+    func refresh() {
+        func refreshNode(_ node: FolderNode) {
+            if node.isGroup { node.children?.forEach { refreshNode($0) }; return }
+            if outline.isItemExpanded(node) {
+                load(node, expand: false)
+                node.children?.forEach { refreshNode($0) }
+            } else {
+                node.stopObserving()
+                node.children = nil
+            }
+        }
+        roots.forEach { refreshNode($0) }
+    }
+
+    private func load(_ node: FolderNode, expand: Bool) {
+        // Watcher installation and rapid events may request another read while open() is
+        // blocked. Keep one active read per node and reconcile once after it completes.
+        guard !node.loading else { node.needsRefresh = true; return }
+        node.task?.cancel()
+        node.request += 1
+        let nodeRequest = node.request
+        node.loading = true
+        observe(node)
+        let request = generation, showHidden = hidden, url = node.url
+        node.task = Task { [weak self, weak node] in
+            do {
+                let entries = try await ApplicationDirectoryReader(purpose: .background).entries(at: url, showHidden: showHidden)
+                var mounts: [String: VolumeMount] = [:]
+                if url.isFileURL && url.path == "/Volumes" {
+                    mounts = await Task.detached(priority: .utility) {
+                        var found: [String: VolumeMount] = [:]
+                        for entry in entries where entry.canNavigate {
+                            if let mount = try? VolumeMount.identify(at: entry.url) { found[entry.id] = mount }
+                        }
+                        return found
+                    }.value
+                }
+                guard let self, let node, request == self.generation, nodeRequest == node.request else { return }
+                let expanded = self.expandedNodes(under: [node])
+                let selectedURL = (self.outline.item(atRow: self.outline.selectedRow) as? FolderNode)?.url
+                let previous = Dictionary((node.children ?? []).map { ($0.url.explorerIdentity, $0) }, uniquingKeysWith: { first, _ in first })
+                // Directory symlinks remain navigable in Details, but never recursively expand the tree.
+                node.children = entries.filter { $0.canNavigate && (!$0.isSymbolicLink || mounts[$0.id] != nil) }
+                    .map { entry in
+                        let child = previous[entry.id] ?? FolderNode(url: entry.url)
+                        child.volume = mounts[entry.id]
+                        child.volumeLink = entry.isSymbolicLink
+                        return child
+                    }
+                let remaining = Set(node.children?.map { $0.url.explorerIdentity } ?? [])
+                for child in previous.values where !remaining.contains(child.url.explorerIdentity) { child.stopObserving() }
+                node.loading = false
+                node.failure = nil
+                if expand || !expanded.isEmpty { self.observe(node) }
+                self.selecting = true
+                self.outline.reloadItem(node, reloadChildren: true)
+                if expand { self.outline.expandItem(node) }
+                for item in expanded where item === node || self.outline.row(forItem: item) >= 0 {
+                    self.outline.expandItem(item)
+                    if item.watcher == nil && item.url.isFileURL {
+                        self.observe(item)
+                        self.load(item, expand: false)
+                    }
+                }
+                self.selecting = false
+                if let selectedURL { self.selectIfVisible(selectedURL) }
+                if self.outline.isItemExpanded(node) { self.observe(node) }
+                if node.needsRefresh {
+                    node.needsRefresh = false
+                    self.load(node, expand: false)
+                }
+            } catch {
+                guard let self, let node, request == self.generation, nodeRequest == node.request else { return }
+                node.loading = false
+                node.needsRefresh = false
+                node.failure = DirectoryFailure(path: url.explorerIdentity, error: error)
+                self.outline.reloadItem(node)
+            }
+        }
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
+        guard let node = item as? FolderNode else { return nil }
+        let cell = (outlineView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("folder"), owner: self)
+                    as? FileNameCell) ?? FileNameCell()
+        cell.identifier = NSUserInterfaceItemIdentifier("folder")
+        cell.label.stringValue = node.title
+        cell.label.font = ExplorerStyle.font(.tree)
+        let symbol: String
+        let color: NSColor
+        switch node.symbol {
+        case "house": symbol = "house.fill"; color = .systemOrange
+        case "desktopcomputer": symbol = node.symbol; color = .systemCyan
+        case "arrow.down.circle": symbol = "arrow.down.circle.fill"; color = .systemTeal
+        case "doc": symbol = "doc.text.fill"; color = .systemBlue
+        case "photo.fill": symbol = node.symbol; color = .systemBlue
+        case "music.note": symbol = node.symbol; color = .systemPink
+        case "film.fill": symbol = node.symbol; color = .systemPurple
+        case "internaldrive": symbol = "desktopcomputer"; color = .systemCyan
+        case "externaldrive": symbol = "externaldrive.fill"; color = .systemGray
+        case "cloud.s3": symbol = "externaldrive.badge.icloud"; color = .systemOrange
+        case "cloud.azure": symbol = "externaldrive.badge.icloud"; color = .systemBlue
+        case "cloud.gcs": symbol = "externaldrive.badge.icloud"; color = .systemGreen
+        case "cloud.fill": symbol = node.symbol; color = .systemCyan
+        default: symbol = "folder.fill"; color = .systemYellow
+        }
+        cell.icon.image = ExplorerStyle.symbol(node.failure == nil ? symbol : "exclamationmark.triangle.fill", description: node.title)
+        cell.icon.contentTintColor = node.failure == nil ? color : .systemOrange
+        cell.shortcutBadge.isHidden = true
+        GitDecoration.apply(to: cell, url: node.url, directory: true, snapshot: gitSnapshot, roots: gitRoots,
+            baseTooltip: L10n.directoryError(node.failure) ?? CloudAccounts.shared.address(for: node.url))
+        return cell
+    }
+
+    func outlineViewSelectionDidChange(_ notification: Notification) {
+        guard !selecting, let node = outline.item(atRow: outline.selectedRow) as? FolderNode else { return }
+        if node.isGroup { onNavigate?(node.url); return }
+        onNavigate?(node.url)
+    }
+}

@@ -1,0 +1,185 @@
+// SPDX-License-Identifier: Apache-2.0
+import AppKit
+import ExplorerCore
+
+private enum UpdateError: Error { case access, invalid }
+
+private final class UpdateRedirects: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        guard let url = request.url, url.scheme == "https",
+              let host = url.host, host.hasSuffix(".githubusercontent.com") else { completionHandler(nil); return }
+        var stripped = URLRequest(url: url)
+        stripped.httpMethod = "GET"
+        completionHandler(stripped)
+    }
+}
+
+@MainActor
+final class GitHubUpdater {
+    private let preferences: UpdateCheckPreferences
+    private let app: URL
+    private let session: URLSession
+    private var task: Task<Void, Never>?
+    private var staged: URL?
+    private weak var prompt: NSAlert?
+    var requestRestart: (() -> Void)?
+    var changed: (() -> Void)?
+    private(set) var status = "updates.idle" { didSet { changed?() } }
+    var canCheckNow: Bool { status != "updates.checking" && status != "updates.downloading" }
+    var enabled: Bool { preferences.enabled }
+
+    init(defaults: UserDefaults = .standard, app: URL = Bundle.main.bundleURL) {
+        preferences = UpdateCheckPreferences(defaults: defaults)
+        self.app = app
+        let config = URLSessionConfiguration.ephemeral
+        config.httpShouldSetCookies = false
+        config.urlCredentialStorage = nil
+        config.timeoutIntervalForResource = 600
+        session = URLSession(configuration: config, delegate: UpdateRedirects(), delegateQueue: nil)
+    }
+    func start() {
+        guard canCheckNow, enabled else { return }
+        if preferences.isDeferred(at: Date()) { status = "updates.deferred"; return }
+        check(manualWindow: nil)
+    }
+
+    func checkNow(from window: NSWindow) {
+        guard canCheckNow else { return }
+        check(manualWindow: window)
+    }
+
+    private func check(manualWindow: NSWindow?) {
+        let minimumBuild = manualWindow == nil ? preferences.skippedBuild : 0
+        status = "updates.checking"
+        task = Task {
+            do {
+                try Task.checkCancellation()
+                let candidate = try await newest(after: minimumBuild)
+                try Task.checkCancellation()
+                guard let candidate else { status = "updates.current"; return }
+                guard let owner = manualWindow ?? DialogPlacement.explorerWindow, owner.isVisible else {
+                    status = "updates.idle"
+                    return
+                }
+                let alert = NSAlert()
+                alert.messageText = L10n.format("updates.offer", String(candidate.build))
+                alert.informativeText = L10n.text("updates.explanation")
+                alert.addButton(withTitle: L10n.text("updates.install"))
+                if manualWindow != nil {
+                    alert.addButton(withTitle: L10n.text("dialog.cancel")).keyEquivalent = "\u{1b}"
+                } else {
+                    alert.addButton(withTitle: L10n.text("updates.later")).keyEquivalent = "\u{1b}"
+                    alert.addButton(withTitle: L10n.text("updates.skip"))
+                }
+                prompt = alert
+                let response = await alert.beginSheetModal(for: owner)
+                try Task.checkCancellation()
+                prompt = nil
+                switch response {
+                case .alertSecondButtonReturn where manualWindow == nil:
+                    preferences.remindLater(from: Date())
+                    status = "updates.deferred"
+                case .alertThirdButtonReturn where manualWindow == nil:
+                    preferences.skip(build: candidate.build)
+                    status = "updates.skipped"
+                case .alertFirstButtonReturn:
+                    status = "updates.downloading"
+                    let result = try await download(candidate)
+                    if Task.isCancelled {
+                        try? FileManager.default.removeItem(at: result.deletingLastPathComponent())
+                        return
+                    }
+                    staged = result
+                    while let operation = FileCommands.shared.task {
+                        await operation.value
+                        try Task.checkCancellation()
+                    }
+                    requestRestart?()
+                default: status = "updates.idle"
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                let wasDownloading = status == "updates.downloading"
+                status = (error as? UpdateError) == .access ? "updates.access" : "updates.failed"
+                if wasDownloading { reportFailure() }
+            }
+        }
+    }
+
+    func setEnabled(_ value: Bool) {
+        cancel()
+        preferences.enabled = value
+        start()
+    }
+
+    func cancel() {
+        task?.cancel()
+        if let window = prompt?.window { window.sheetParent?.endSheet(window, returnCode: .cancel) }
+        prompt = nil
+        if let staged { try? FileManager.default.removeItem(at: staged.deletingLastPathComponent()) }
+        staged = nil
+        status = "updates.idle"
+    }
+
+    private let api = "https://api.github.com/repos/leoars/my-explorer/releases"
+
+    private func request(_ url: URL, asset: Bool = false) -> URLRequest {
+        var req = URLRequest(url: url)
+        req.setValue(asset ? "application/octet-stream" : "application/vnd.github+json", forHTTPHeaderField: "Accept")
+        return req
+    }
+
+    private func validate(_ response: URLResponse) throws {
+        let code = (response as? HTTPURLResponse)?.statusCode
+        if [401, 403, 404].contains(code) { throw UpdateError.access }
+        guard code == 200 else { throw UpdateError.invalid }
+    }
+
+    private typealias Candidate = (build: Int, asset: GitHubUpdateRelease.Asset)
+
+    private func newest(after minimumBuild: Int) async throws -> Candidate? {
+        let current = max(try UpdateInstaller.build(app), minimumBuild)
+        var best: (build: Int, asset: GitHubUpdateRelease.Asset)?
+        var page = 1
+        while true {
+            let url = URL(string: api + "?per_page=100&page=\(page)")!
+            let (data, response) = try await session.data(for: request(url))
+            try validate(response)
+            let releases = try JSONDecoder().decode([GitHubUpdateRelease].self, from: data)
+            if let candidate = GitHubUpdateRelease.newest(in: releases, after: best?.build ?? current) { best = candidate }
+            if releases.count < 100 { break }
+            page += 1
+        }
+        return best
+    }
+
+    private func download(_ best: Candidate) async throws -> URL {
+        let (file, response) = try await session.download(for: request(URL(string: api + "/assets/\(best.asset.id)")!, asset: true))
+        defer { try? FileManager.default.removeItem(at: file) }
+        try validate(response)
+        guard try file.resourceValues(forKeys: [.fileSizeKey]).fileSize == best.asset.size else { throw UpdateError.invalid }
+        try Task.checkCancellation()
+        let app = self.app
+        return try await Task.detached {
+            let image = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".dmg")
+            try FileManager.default.moveItem(at: file, to: image)
+            defer { try? FileManager.default.removeItem(at: image) }
+            return try UpdateInstaller.stage(image: image, number: best.build, current: app)
+        }.value
+    }
+    func installForRestart() throws {
+        guard let staged else { throw UpdateError.invalid }
+        try UpdateInstaller.install(staged, over: app)
+        cancel()
+    }
+
+    func reportFailure() {
+        status = "updates.failed"
+        guard let window = DialogPlacement.explorerWindow else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = L10n.text("updates.failed")
+        alert.beginSheetModal(for: window, completionHandler: nil)
+    }
+}
