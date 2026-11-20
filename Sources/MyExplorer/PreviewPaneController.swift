@@ -47,6 +47,7 @@ final class PreviewPaneController: NSViewController {
         placeholder.setAccessibilityIdentifier("explorer.preview.message")
         ocrButton.title = L10n.text("ocr.title")
         ocrButton.font = ExplorerStyle.font(.bars)
+        ocrButton.setContentHuggingPriority(.required, for: .vertical)
         ocrButton.target = self; ocrButton.action = #selector(extractText)
         ocrButton.isEnabled = false
         ocrButton.setAccessibilityIdentifier("explorer.preview.ocr")
