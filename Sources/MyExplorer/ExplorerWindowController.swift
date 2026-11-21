@@ -26,6 +26,8 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     var gitSummaryText: String { gitSummary.stringValue }
     var gitSnapshot: GitStatusSnapshot? { gitState.snapshot }
     private var forceGitRefresh = false
+    private(set) lazy var systemVolumes = SystemVolumeController(browser: self)
+    private var trashBrowser: TrashBrowserController?
     let tree: FolderTreeController
     weak var secureFolders: SecureFolderCommands?
     let sidebarHome: URL?
@@ -62,6 +64,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     private var restoringLayout = true
     private var presentationSaveTask: Task<Void, Never>?
     private var keyMonitor: Any?
+    private var searchWindow: FileSearchController?
     var fileSharing = FileSharingController()
     init(initialURL: URL, sidebarHome: URL? = nil, existingWorkspace: ExplorerWorkspace? = nil,
          existingTree: FolderTreeController? = nil) {
@@ -107,7 +110,18 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             self.forceGitRefresh = true
         }
         tree.onNavigate = { [weak self] url in self?.navigate(.visit(url)) }
+        systemVolumes.start()
+        tree.onDisconnectCloud = { [weak self] id in self?.promptToDisconnect(id) }
+        tree.onRemoveMount = { [weak self] mount in self?.systemVolumes.remove(mount) }
+        tree.onSavedSearch = { [weak self] in self?.presentSearch(saved: $0) }
         tree.onVolumeProperties = { [weak self] url, mount in self?.showVolumeProperties(at: url, mount: mount) }
+        tree.onShowTrash = { [weak self] in
+            guard let self else { return }
+            if self.trashBrowser == nil { self.trashBrowser = TrashBrowserController() }
+            self.trashBrowser?.showWindow(nil)
+            self.trashBrowser?.refresh()
+            self.tree.selectIfVisible(self.session.history.current.url)
+        }
         tree.onManageCloud = { [weak self] in self?.onManageCloud?() }
         previewPane.onExtractText = { [weak self] url in self?.onExtractText?(url) }
         table.openSelection = { [weak self] in self?.openSelected(nil) }
@@ -281,12 +295,11 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         progress.heightAnchor.constraint(equalToConstant: 16).isActive = true
         let statusSpacer = NSView()
         statusSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let badge = ExplorerStyle.label(L10n.text("view.prototype"), size: 11, color: .secondaryLabelColor)
         gitSummary.lineBreakMode = .byTruncatingTail
         gitSummary.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         gitSummary.setAccessibilityIdentifier("explorer.git.summary")
         gitSummary.isHidden = true
-        addBar(ExplorerStyle.stack([progress, status, statusSpacer, gitSummary, badge]), to: root, height: 30)
+        addBar(ExplorerStyle.stack([progress, status, statusSpacer, gitSummary]), to: root, height: 30)
         applyBarFonts(to: root)
     }
 
@@ -413,6 +426,10 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         table.registerForDraggedTypes(FileClipboard.dragTypes)
         table.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
         table.setDraggingSourceOperationMask(.copy, forLocal: false)
+        table.serviceSelection = { [weak self] in
+            guard let self, !self.session.blocksInteraction else { return [] }
+            return self.commandEntries(nil).map(\.url)
+        }
         table.renameCandidate = { [weak self] point in self?.renameCandidate(at: point) }
         table.action = #selector(completedTableClick)
         table.target = self; table.doubleAction = #selector(openSelected)
@@ -424,13 +441,37 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         ExplorerStyle.configureMenu(menu)
     }
 
-    func navigate(_ action: NavigationAction) {
+    @objc func showFileSearch(_ sender: Any?) { presentSearch(saved: nil) }
+
+    private func presentSearch(saved: ExplorerSavedSearch?) {
+        searchWindow?.close()
+        let base = session.history.current.url
+        let next = FileSearchController(folder: base.isFileURL ? base : FileManager.default.homeDirectoryForCurrentUser,
+                                        saved: saved, onReveal: { [weak self] url in
+            self?.navigate(.visit(url.explorerParent), revealing: url)
+        }, onSave: { [weak self] search in
+            try self?.tree.saveSearch(search)
+        })
+        searchWindow = next
+        next.showWindow(nil)
+    }
+
+    @objc private func editFinderTags(_ sender: Any?) {
+        guard let window else { return }
+        SearchTagEditor.present(urls: commandEntries(sender).map(\.url), owner: window)
+    }
+
+    func navigate(_ action: NavigationAction, revealing file: URL? = nil) {
         endInlineRename()
         // Prevent accidental actions on stale rows while a new destination is pending.
         if !session.blocksInteraction { rememberView() }
         workspace.activeTab?.prepareForUserNavigation()
-        if let id = workspace.activeID { restorationFallbackTabs.remove(id) }
-        session.navigate(action)
+        if let id = workspace.activeID { restorationFallbackTabs.remove(id); systemVolumes.clearNotice(for: id) }
+        if file != nil {
+            workspace.activeTab?.filterQuery = ""
+            filter.stringValue = ""
+        }
+        session.navigate(action, selecting: file.map { [$0.explorerIdentity] })
     }
 
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
@@ -492,7 +533,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         upButton.isEnabled = !session.history.current.url.explorerIsRoot
         table.isEnabled = !session.blocksInteraction
         let restoredFallback = tab.restorationUnavailableURL != nil || restorationFallbackTabs.contains(tab.id)
-        errorLabel.stringValue = L10n.directoryError(session.failure) ?? (restoredFallback ? L10n.text("options.restore_unavailable") : "")
+        errorLabel.stringValue = L10n.directoryError(session.failure) ?? systemVolumes.notice(for: tab.id) ?? (restoredFallback ? L10n.text("options.restore_unavailable") : "")
         errorLabel.toolTip = errorLabel.stringValue
         errorLabel.isHidden = errorLabel.stringValue.isEmpty
         hiddenButton.state = session.showHidden ? .on : .off
@@ -761,10 +802,12 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         case #selector(undoFileOperation):
             menuItem.title = FileCommands.shared.undoTitle
             return !FileCommands.shared.isBusy && FileCommands.shared.undoKind != nil
-        case #selector(cutFiles), #selector(compressFiles):
+        case #selector(cutFiles): return !session.blocksInteraction && FileCommands.shared.canCut(entries)
+        case #selector(compressFiles):
             return local && !entries.isEmpty && !session.blocksInteraction && !FileCommands.shared.isBusy
         case #selector(trashFiles): return !entries.isEmpty && !session.blocksInteraction && !FileCommands.shared.isBusy
         case #selector(copyFiles): return !entries.isEmpty && !session.blocksInteraction
+        case #selector(editFinderTags): return local && !entries.isEmpty && !session.blocksInteraction
         case #selector(shareFiles): return FileSharingController.supports(entries.map(\.url)) && !session.blocksInteraction
         case #selector(extractText): return !session.blocksInteraction && Self.canExtractText(entries)
         case #selector(batchOCR): return !session.blocksInteraction && Self.canBatchOCR(entries)
@@ -773,7 +816,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             guard menuItem.menu === table.menu || acceptsFileListCommands else { return false }
             let destination = menuItem.menu === table.menu && entries.count == 1 && entries[0].canNavigate ? entries[0].url : session.history.current.url
             return FileCommands.shared.canPaste(into: destination) && !session.blocksInteraction && !FileCommands.shared.isBusy
-        case #selector(newFolder): return (menuItem.menu === table.menu || acceptsFileListCommands) && session.history.current.url.isFileURL && !session.blocksInteraction && !FileCommands.shared.isBusy
+        case #selector(newFolder): return (menuItem.menu === table.menu || acceptsFileListCommands) && !session.blocksInteraction && FileCommands.shared.canCreateFolder(in: session.history.current.url)
         case #selector(extractFile): return local && entries.count == 1 && !entries[0].isDirectory && entries[0].url.pathExtension.lowercased() == "zip" && !FileCommands.shared.isBusy
         case #selector(properties), #selector(openSelected): return entries.count == 1 && !session.blocksInteraction
         case #selector(openWith): return local && !entries.isEmpty && entries.allSatisfy { !$0.canNavigate }
@@ -806,6 +849,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         if !contextEntries.isEmpty {
             item("command.cut_files", #selector(cutFiles), "scissors")
             item("command.copy_files", #selector(copyFiles), "doc.on.doc")
+            if contextEntries.allSatisfy({ $0.url.isFileURL }) { item("search.tags_edit", #selector(editFinderTags), "tag") }
             item("command.share", #selector(shareFiles), "square.and.arrow.up")
             if contextEntries.count == 1 && contextEntries[0].canNavigate {
                 item("command.paste_files", #selector(pasteFiles), "doc.on.clipboard")
@@ -827,6 +871,14 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             item(contextEntries.count == 1 && !contextEntries[0].url.isFileURL && !contextEntries[0].canNavigate ? "cloud.open_copy" : "command.open", #selector(openSelected), "arrow.up.forward.square")
             item("command.open_new_tab", #selector(openSelectedInNewTab), "plus.square.on.square")
             item("command.open_with", #selector(openWith), "app")
+            if entries.count == 1, let entry = entries.first, let state = entry.iCloudAvailability, entry.secureFolderURL == nil {
+                if state == .onlineOnly || state == .failed { item("icloud.download", #selector(downloadFromICloud), "icloud.and.arrow.down") }
+                if entry.canRemoveICloudDownload { item("icloud.remove", #selector(removeLocalDownload), "icloud") }
+                item("icloud.finder", #selector(manageICloudInFinder), "folder")
+            }
+            if let actions = QuickActionCommands.menu(for: contextEntries, in: window) {
+                menu.addItem(withTitle: actions.title, action: nil, keyEquivalent: "").submenu = actions
+            }
             item("ocr.title", #selector(extractText), "text.viewfinder")
             item("ocr.batch.title", #selector(batchOCR), "doc.on.doc")
             menu.addItem(.separator())
@@ -955,8 +1007,8 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         return table.selectedRowIndexes.compactMap { visibleEntries.indices.contains($0) ? visibleEntries[$0] : nil }
     }
     @objc func cutFiles(_ sender: Any?) {
-        let entries = commandEntries(sender)
-        if entries.allSatisfy({ $0.url.isFileURL }) { FileCommands.shared.copy(entries, cut: true) }
+        guard !session.blocksInteraction else { return }
+        FileCommands.shared.copy(commandEntries(sender), cut: true)
     }
     @objc func copyFiles(_ sender: Any?) { FileCommands.shared.copy(commandEntries(sender), cut: false) }
     static func canExtractText(_ entries: [FileEntry]) -> Bool {
@@ -971,6 +1023,35 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         guard !session.blocksInteraction, Self.canBatchOCR(entries) else { return }
         onBatchOCR?(entries.map(\.url))
     }
+    @objc private func downloadFromICloud(_ sender: Any?) {
+        guard let entry = commandEntries(sender).first, entry.iCloudAvailability != nil else { return }
+        FileCommands.shared.run("icloud.download") {
+            try await Task.detached { try ICloudAvailability.request(.download, at: entry.url) }.value
+            return [entry.url]
+        }
+    }
+
+    @objc private func removeLocalDownload(_ sender: Any?) {
+        guard let entry = commandEntries(sender).first, entry.canRemoveICloudDownload, let window else { return }
+        let alert = NSAlert()
+        alert.messageText = L10n.text("icloud.remove")
+        alert.informativeText = L10n.format("icloud.remove_help", entry.name)
+        alert.addButton(withTitle: L10n.text("icloud.remove"))
+        alert.addButton(withTitle: L10n.text("dialog.cancel"))
+        alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            FileCommands.shared.run("icloud.remove") {
+                try await Task.detached { try ICloudAvailability.request(.removeDownload, at: entry.url) }.value
+                return [entry.url]
+            }
+        }
+    }
+
+    @objc private func manageICloudInFinder(_ sender: Any?) {
+        guard let entry = commandEntries(sender).first, entry.iCloudAvailability != nil else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([entry.url])
+    }
+
     @objc func extractText(_ sender: Any?) {
         let entries = commandEntries(sender)
         guard !session.blocksInteraction, Self.canExtractText(entries) else { return }
@@ -1096,9 +1177,16 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     @objc func extractFile(_ sender: Any?) { if let entry = commandEntries(sender).first { FileCommands.shared.extract(entry, in: session.history.current.url) } }
     @objc private func properties(_ sender: Any?) { if let entry = commandEntries(sender).first { FileCommands.shared.properties(entry) } }
     @objc private func openWith(_ sender: Any?) { FileCommands.shared.openWith(commandEntries(sender)) }
-    func operationFinished(urls: [URL], tabID: UUID?) {
+    func operationFinished(urls: [URL], tabID: UUID?, refreshing directories: Set<String> = []) {
+        if trashBrowser?.window?.isVisible == true { trashBrowser?.refresh() }
         tree.refresh()
-        guard workspace.activeID == tabID else { return }
+        for tab in workspace.tabs where tab.id != workspace.activeID && !tab.pendingInitialLoad &&
+            directories.contains(tab.session.history.current.url.explorerIdentity) && !tab.session.isLoading {
+            tab.session.navigate(.reload)
+        }
+        if !directories.isEmpty {
+            guard directories.contains(session.history.current.url.explorerIdentity), !session.blocksInteraction else { return }
+        } else if workspace.activeID != tabID { return }
         if !session.blocksInteraction { rememberView() }
         let location = session.history.current.url
         let selected = urls.compactMap { url -> URL? in
@@ -1119,6 +1207,10 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
 
     @objc private func addressSubmitted(_ sender: Any?) {
         addressSuggestions.dismiss()
+        if address.stringValue.lowercased().hasPrefix("smb:") {
+            systemVolumes.connect(address.stringValue)
+            return
+        }
         guard let url = CloudAccounts.shared.resolve(address.stringValue) ?? AddressParser.resolve(address.stringValue, relativeTo: session.history.current.url) else {
             errorLabel.stringValue = L10n.text("error.address")
             errorLabel.isHidden = false
@@ -1165,6 +1257,45 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         if !session.blocksInteraction { rememberView() }
         let preferences = ExplorerStyle.browserPreferences
         return workspace.addTab(at: url, sortKey: preferences.sortKey, sortAscending: preferences.sortAscending, showHidden: preferences.showHidden)
+    }
+
+    func openConnectedBucket(_ url: URL) {
+        guard let id = RemoteLocation.parse(url)?.connectionID else { addTab(at: url); return }
+        func belongs(_ tab: ExplorerTab) -> Bool {
+            RemoteLocation.parse(tab.session.history.current.url)?.connectionID == id
+        }
+        if let current = workspace.activeTab, belongs(current) { window?.makeKeyAndOrderFront(nil); return }
+        if let existing = workspace.tabs.first(where: belongs) { selectTab(id: existing.id) }
+        else { addTab(at: url) }
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    private func promptToDisconnect(_ id: UUID) {
+        guard let window, let connection = CloudAccounts.shared.connections.first(where: { $0.id == id }) else { return }
+        let alert = NSAlert()
+        alert.messageText = L10n.format("cloud.disconnect_prompt", connection.name)
+        alert.informativeText = L10n.text("cloud.disconnect_help")
+        alert.addButton(withTitle: L10n.text("dialog.cancel"))
+        alert.addButton(withTitle: L10n.text("volume.disconnect"))
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertSecondButtonReturn, let self else { return }
+            guard !FileCommands.shared.isBusy else {
+                SearchTagEditor.showError(L10n.text("trash.busy"), owner: window)
+                return
+            }
+            do {
+                try CloudAccounts.shared.remove(id)
+                let affected = self.workspace.tabs.filter { RemoteLocation.parse($0.session.history.current.url)?.connectionID == id }
+                if !affected.isEmpty && affected.count == self.workspace.tabs.count {
+                    self.addTab(at: self.sidebarHome ?? FileManager.default.homeDirectoryForCurrentUser)
+                }
+                for tab in affected { self.closeTab(id: tab.id) }
+                for tab in self.workspace.tabs { tab.session.forgetCloudHistory(id) }
+                self.refresh(nil)
+            } catch {
+                SearchTagEditor.showError(L10n.text("cloud.error.io"), owner: window)
+            }
+        }
     }
 
     func selectTab(id: UUID) {
@@ -1363,6 +1494,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     }
 
     func concealSecureFolders(_ roots: [URL]) {
+        searchWindow?.close(); searchWindow = nil
         vaultPresentationGeneration += 1
         for sheet in window?.sheets ?? [] {
             if let url = sheet.representedURL, roots.contains(where: { SecureFolderCommands.contains(url, in: $0) }) {
@@ -1393,6 +1525,9 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     }
 
     func prepareForLanguageChange() {
+        searchWindow?.close(); searchWindow = nil
+        trashBrowser?.close(); trashBrowser = nil
+        systemVolumes.stop()
         addressSuggestions.dismiss()
         gitReview?.close()
         gitState.stop()
@@ -1412,6 +1547,9 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     func windowDidResignKey(_ notification: Notification) { addressSuggestions.dismiss(); endInlineRename() }
 
     func windowWillClose(_ notification: Notification) {
+        searchWindow?.close(); searchWindow = nil
+        trashBrowser?.close(); trashBrowser = nil
+        systemVolumes.stop()
         addressSuggestions.dismiss()
         endInlineRename()
         gitState.stop()

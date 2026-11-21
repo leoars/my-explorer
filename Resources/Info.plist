@@ -8,14 +8,15 @@
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleVersion</key><string>27</string>
-    <key>MyExplorerReleaseChannel</key><string>private-beta.12</string>
+    <key>CFBundleVersion</key><string>28</string>
+    <key>MyExplorerReleaseChannel</key><string>public</string>
     <key>CFBundleDevelopmentRegion</key><string>en</string>
     <key>CFBundleLocalizations</key><array>
         <string>en</string><string>pt-BR</string><string>es</string><string>fr</string>
         <string>de</string><string>ja</string><string>ko</string><string>it</string>
     </array>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>NSCameraUsageDescription</key><string>My Explorer uses Image Capture to show photos on your connected device and import the photos you select.</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSHumanReadableCopyright</key><string>My Explorer contributors. Apache-2.0.</string>

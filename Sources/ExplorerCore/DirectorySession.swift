@@ -56,6 +56,8 @@ public final class DirectorySession {
         self.observer = observer
     }
 
+    public func forgetCloudHistory(_ id: UUID) { history.forgetCloudConnection(id) }
+
     public func remember(selection: Set<String>, scrollOffset: Double) {
         history.remember(selection: selection, scrollOffset: scrollOffset)
     }
@@ -71,8 +73,8 @@ public final class DirectorySession {
     }
 
     @discardableResult
-    public func navigate(_ action: NavigationAction) -> Task<Void, Never> {
-        performNavigation(action, automatic: false)
+    public func navigate(_ action: NavigationAction, selecting selection: Set<String>? = nil) -> Task<Void, Never> {
+        performNavigation(action, automatic: false, selection: selection)
     }
 
     /// Only used by the workspace's guarded first-restore fallback. The unavailable location
@@ -85,7 +87,7 @@ public final class DirectorySession {
         return navigate(.reload)
     }
 
-    private func performNavigation(_ action: NavigationAction, automatic: Bool) -> Task<Void, Never> {
+    private func performNavigation(_ action: NavigationAction, automatic: Bool, selection: Set<String>? = nil) -> Task<Void, Never> {
         var candidate = history
         switch action {
         case .visit(let url): candidate.visit(url)
@@ -94,6 +96,7 @@ public final class DirectorySession {
         case .up: candidate.goUp()
         case .reload: break
         }
+        if let selection { candidate.remember(selection: selection, scrollOffset: 0) }
         if candidate.current.url.explorerIdentity != history.current.url.explorerIdentity { stopWatching() }
         generation += 1
         let request = generation

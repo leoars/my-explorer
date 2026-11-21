@@ -12,12 +12,17 @@ public struct FileEntry: Identifiable, Equatable, Sendable {
     public let isAlias: Bool
     public let size: Int64?
     public let modified: Date?
+    public let canRemoveICloudDownload: Bool
+    public let iCloudAvailability: ICloudAvailability?
     public let kind: String
     public var canNavigate: Bool { isDirectory && !isPackage && secureFolderURL == nil }
 
     public init(url: URL, name: String, isDirectory: Bool, isPackage: Bool = false,
                 isSymbolicLink: Bool = false, isAlias: Bool = false, size: Int64? = nil, modified: Date? = nil,
-                kind: String = "File", secureFolderURL: URL? = nil) {
+                kind: String = "File", secureFolderURL: URL? = nil, iCloudAvailability: ICloudAvailability? = nil,
+                canRemoveICloudDownload: Bool = false) {
+        self.canRemoveICloudDownload = canRemoveICloudDownload
+        self.iCloudAvailability = iCloudAvailability
         self.url = url; self.name = name; self.isDirectory = isDirectory
         self.secureFolderURL = secureFolderURL ?? (isDirectory && SecureFolderService.isVault(url) ? url : nil)
         self.isPackage = isPackage; self.isSymbolicLink = isSymbolicLink; self.isAlias = isAlias
@@ -79,7 +84,7 @@ public struct DirectoryReader: DirectoryReading {
               !LocalTransferRecovery.isProtected(directoryURL) else { throw CocoaError(.fileReadNoPermission) }
         try request.checkCancellation()
         let keys: Set<URLResourceKey> = [.isDirectoryKey, .isPackageKey, .isSymbolicLinkKey, .isAliasFileKey,
-            .fileSizeKey, .contentModificationDateKey]
+            .fileSizeKey, .contentModificationDateKey, .isUbiquitousItemKey]
         let urls = try FileManager.default.contentsOfDirectory(
             at: directoryURL, includingPropertiesForKeys: Array(keys),
             options: showHidden ? [] : [.skipsHiddenFiles])
@@ -105,15 +110,22 @@ public struct DirectoryReader: DirectoryReading {
             // Foundation may enumerate /tmp as /private/tmp. Preserve the navigated path
             // so selection and Up use the same identity, including directory symlinks.
             let displayedURL = url.appendingPathComponent(file.lastPathComponent, isDirectory: directory)
+            var iCloud: ICloudAvailability?
+            var removable = false
+            if values?.isUbiquitousItem == true && !symbolic {
+                let metadata = try? file.resourceValues(forKeys: ICloudAvailability.keys.union([.isDirectoryKey]))
+                iCloud = metadata.map(ICloudAvailability.init) ?? .unknown
+                removable = metadata.map(ICloudAvailability.canRemoveDownload) ?? false
+            }
             entries.append(FileEntry(url: displayedURL, name: file.lastPathComponent,
                 isDirectory: directory, isPackage: package, isSymbolicLink: symbolic, isAlias: values?.isAliasFile == true,
                 size: values?.fileSize.map(Int64.init), modified: values?.contentModificationDate,
-                kind: kind, secureFolderURL: symbolic ? vault : nil))
+                kind: kind, secureFolderURL: symbolic ? vault : nil, iCloudAvailability: iCloud, canRemoveICloudDownload: removable))
         }
         return EntryOrdering.sorted(entries)
     }
 
-    private static func enclosingVault(_ url: URL) -> URL? {
+    static func enclosingVault(_ url: URL) -> URL? {
         var item = url.standardizedFileURL
         while item.pathComponents.count > 1 {
             if SecureFolderService.isVault(item) { return item }

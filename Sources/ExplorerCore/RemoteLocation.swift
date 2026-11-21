@@ -2,6 +2,11 @@
 import Foundation
 
 public enum RemoteLocation {
+    public static func resolvingAliases(in url: URL, aliases: [UUID: UUID]) -> URL {
+        guard let location = parse(url), let id = aliases[location.connectionID] else { return url }
+        return Self.url(connectionID: id, key: location.key)
+    }
+
     public static let scheme = "myexplorer-cloud"
     public static func url(connectionID: UUID, key: String = "") -> URL {
         var components = URLComponents()

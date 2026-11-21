@@ -26,6 +26,29 @@ public struct SessionRestorePlan: Equatable, Sendable {
     public let tabs: [SessionTabState]
     public let activeIndex: Int
     public let fallbackReasons: [Int: SessionRestoreFallbackReason]
+
+    public func resolvingCloudAliases(_ aliases: [UUID: UUID]) -> Self {
+        guard !aliases.isEmpty else { return self }
+        let urls = tabs.map { RemoteLocation.resolvingAliases(in: $0.url, aliases: aliases) }
+        let migrated = Set(tabs.indices.filter { tabs[$0].url != urls[$0] }.map { urls[$0] })
+        guard !migrated.isEmpty else { return self }
+        var restored: [SessionTabState] = [], reasons: [Int: SessionRestoreFallbackReason] = [:]
+        var positions: [URL: Int] = [:], active = 0
+        for (i, tab) in tabs.enumerated() {
+            let url = urls[i]
+            let state = SessionTabState(url: url, sortKey: tab.sortKey, sortAscending: tab.sortAscending, showHidden: tab.showHidden)
+            if migrated.contains(url), let position = positions[url] {
+                if i == activeIndex { active = position; restored[position] = state }
+                continue
+            }
+            if i == activeIndex { active = restored.count }
+            positions[url] = restored.count
+            reasons[restored.count] = fallbackReasons[i]
+            restored.append(state)
+        }
+        return Self(tabs: restored, activeIndex: active, fallbackReasons: reasons)
+    }
+
 }
 
 @MainActor

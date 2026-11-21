@@ -10,7 +10,7 @@ if [[ "$rehearsal" == true ]]; then output="$output/rehearsal"; fi
 python3 - "$app" "$rehearsal" <<'PYMETA'
 import pathlib, runpy, sys
 metadata = runpy.run_path("scripts/beta-metadata.py")
-metadata["verified_metadata"](pathlib.Path(sys.argv[1]), sys.argv[2] == "true")
+metadata["verified_metadata"](pathlib.Path(sys.argv[1]), sys.argv[2] == "true", allow_public=True)
 PYMETA
 identity="${MY_EXPLORER_SIGNING_IDENTITY:?Set the Apple signing identity used for the release}"
 requirement='anchor apple generic and certificate leaf[subject.OU] = "GV4SHC87M4"'

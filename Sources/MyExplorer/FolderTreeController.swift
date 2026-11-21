@@ -27,6 +27,7 @@ final class FolderNode: NSObject {
     var title: String
     let symbol: String
     var volume: VolumeMount?
+    var savedSearch: ExplorerSavedSearch?
     var volumeLink = false
     let isGroup: Bool
     var children: [FolderNode]?
@@ -61,9 +62,19 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
     let outline = FolderOutlineView()
     let scrollView = NSScrollView()
     var onNavigate: ((URL) -> Void)?
+    var onDisconnectCloud: ((UUID) -> Void)?
+    var onRemoveMount: ((VolumeMount) -> Void)?
     var onVolumeProperties: ((URL, VolumeMount?) -> Void)?
+    var onShowTrash: (() -> Void)?
+    private let trashRoot = FolderNode(url: URL(string: "myexplorer-trash:///")!, title: L10n.text("trash.title"), symbol: "trash", isGroup: true)
     var onManageCloud: (() -> Void)?
     private var roots: [FolderNode]
+    private let mobileRoot = FolderNode(url: URL(string: "myexplorer-devices:///")!, title: L10n.text("devices.title"), symbol: "iphone", isGroup: true)
+    private var mobileDevices: AppleMobileDevices?
+    var onSavedSearch: ((ExplorerSavedSearch) -> Void)?
+    private let searchLibrary = ExplorerSearchLibrary()
+    private let searchRoot = FolderNode(url: URL(string: "myexplorer-search:///")!,
+                                        title: L10n.text("search.saved"), symbol: "folder.badge.gearshape", isGroup: true)
     private let cloudRoot: FolderNode
     private var hidden = false
     private var generation = 0
@@ -89,6 +100,9 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
             FolderNode(url: URL(fileURLWithPath: "/Volumes"), title: L10n.text("tree.volumes"), symbol: "externaldrive")
         ]
         roots.append(cloudRoot)
+        roots.append(searchRoot)
+        roots.append(mobileRoot)
+        roots.append(trashRoot)
         super.init()
         outline.contextMenuForRow = { [weak self] row in self?.contextMenu(for: row) }
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("folders"))
@@ -110,18 +124,72 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         scrollView.drawsBackground = false
         outline.setAccessibilityIdentifier("explorer.tree")
         reloadCloudConnections()
+        reloadSavedSearches()
         CloudAccounts.shared.onChange = { [weak self] in self?.reloadCloudConnections() }
     }
 
+    func saveSearch(_ search: ExplorerSavedSearch) throws {
+        try searchLibrary.add(search)
+        reloadSavedSearches()
+    }
+
+    private func reloadSavedSearches() {
+        searchRoot.children = searchLibrary.searches.map { search in
+            let node = FolderNode(url: searchRoot.url.appendingPathComponent(search.id.uuidString), title: search.title, symbol: "magnifyingglass")
+            node.savedSearch = search
+            return node
+        }
+        selecting = true
+        outline.reloadItem(searchRoot, reloadChildren: true)
+        if searchRoot.children?.isEmpty == false { outline.expandItem(searchRoot) }
+        selecting = false
+    }
+
+    @objc private func forgetSavedSearch(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID else { return }
+        do { try searchLibrary.remove(id); reloadSavedSearches() }
+        catch { if let window = outline.window { SearchTagEditor.showError(error.localizedDescription, owner: window) } }
+    }
+
     private func contextMenu(for row: Int) -> NSMenu? {
+        if row >= 0, let node = outline.item(atRow: row) as? FolderNode,
+           let location = RemoteLocation.parse(node.url), location.key.isEmpty {
+            let menu = NSMenu()
+            let item = menu.addItem(withTitle: L10n.text("volume.disconnect"), action: #selector(disconnectCloud(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = location.connectionID
+            ExplorerStyle.configureMenu(menu)
+            return menu
+        }
+        if row >= 0, let search = (outline.item(atRow: row) as? FolderNode)?.savedSearch {
+            let menu = NSMenu()
+            let item = menu.addItem(withTitle: L10n.text("search.forget"), action: #selector(forgetSavedSearch(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = search.id
+            return menu
+        }
         guard row >= 0, let node = outline.item(atRow: row) as? FolderNode,
               node.volume != nil || node.url.path == "/" && node.url.isFileURL else { return nil }
         let menu = NSMenu()
         let item = menu.addItem(withTitle: L10n.text("command.properties"), action: #selector(volumeProperties(_:)), keyEquivalent: "")
         item.target = self
         item.representedObject = (node.url, node.volume)
+        if let mount = node.volume, let removal = mount.removal {
+            let remove = menu.addItem(withTitle: L10n.text(removal == .eject ? "volume.eject" : "volume.disconnect"),
+                                      action: #selector(removeMount(_:)), keyEquivalent: "")
+            remove.representedObject = mount
+            remove.target = self
+        }
         ExplorerStyle.configureMenu(menu)
         return menu
+    }
+
+    @objc private func disconnectCloud(_ sender: NSMenuItem) {
+        if let id = sender.representedObject as? UUID { onDisconnectCloud?(id) }
+    }
+
+    @objc private func removeMount(_ sender: NSMenuItem) {
+        if let mount = sender.representedObject as? VolumeMount { onRemoveMount?(mount) }
     }
 
     @objc private func volumeProperties(_ sender: NSMenuItem) {
@@ -154,6 +222,7 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         roots.forEach { $0.stopObserving() }
         for root in roots { root.children = nil; root.loading = false; root.failure = nil }
         reloadCloudConnections()
+        reloadSavedSearches()
         selecting = true
         outline.collapseItem(nil, collapseChildren: true)
         outline.reloadData()
@@ -163,7 +232,11 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
     func relocalize() {
         let keys = ["tree.home", "tree.desktop", "tree.downloads", "tree.documents", "tree.pictures", "tree.music", "tree.videos", "tree.computer", "tree.volumes"]
         for (node, key) in zip(roots, keys) { node.title = L10n.text(key) }
+        mobileDevices?.relocalize()
+        mobileRoot.title = L10n.text("devices.title")
+        searchRoot.title = L10n.text("search.saved")
         cloudRoot.title = L10n.text("cloud.title")
+        trashRoot.title = L10n.text("trash.title")
         outline.setAccessibilityLabel(L10n.text("tree.accessibility"))
         outline.rowHeight = max(30, ExplorerStyle.preferences.fontSize(for: .tree) + 12)
         outline.reloadData(forRowIndexes: IndexSet(integersIn: 0..<outline.numberOfRows), columnIndexes: IndexSet(integer: 0))
@@ -185,18 +258,18 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         (item as? FolderNode)?.children?.count ?? (item == nil ? roots.count : 0)
     }
     func outlineView(_ outlineView: NSOutlineView, pasteboardWriterForItem item: Any) -> (any NSPasteboardWriting)? {
-        guard let node = item as? FolderNode, !node.isGroup, !node.url.explorerIsRoot else { return nil }
+        guard let node = item as? FolderNode, !node.isGroup, node.savedSearch == nil, !node.url.explorerIsRoot else { return nil }
         return FileClipboard.pasteboardWriter(for: node.url)
     }
     func outlineView(_ outlineView: NSOutlineView, validateDrop info: any NSDraggingInfo, proposedItem item: Any?,
                      proposedChildIndex index: Int) -> NSDragOperation {
-        guard let node = item as? FolderNode, !node.isGroup else { return [] }
+        guard let node = item as? FolderNode, !node.isGroup, node.savedSearch == nil else { return [] }
         outlineView.setDropItem(node, dropChildIndex: NSOutlineViewDropOnItemIndex)
         return FileDrop.operation(for: FileDrop.readURLs(from: info), to: node.url,
                                   allowed: FileDrop.allowedOperations(for: info))
     }
     func outlineView(_ outlineView: NSOutlineView, acceptDrop info: any NSDraggingInfo, item: Any?, childIndex index: Int) -> Bool {
-        guard let node = item as? FolderNode, !node.isGroup else { return false }
+        guard let node = item as? FolderNode, !node.isGroup, node.savedSearch == nil else { return false }
         let urls = FileDrop.readURLs(from: info)
         let action = FileDrop.operation(for: urls, to: node.url, allowed: FileDrop.allowedOperations(for: info))
         guard action == .copy || action == .move else { return false }
@@ -210,13 +283,14 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
+        if let node = item as? FolderNode, node === mobileRoot || node.savedSearch != nil { return false }
         // Empty folders can receive new children; keep them retryable and observable.
-        (item as? FolderNode).map { !$0.volumeLink } ?? false
+        return (item as? FolderNode).map { $0 !== trashRoot && !$0.volumeLink } ?? false
     }
 
     func outlineView(_ outlineView: NSOutlineView, shouldExpandItem item: Any) -> Bool {
         guard let node = item as? FolderNode else { return false }
-        if node.volumeLink { return false }
+        if node === trashRoot || node === mobileRoot || node.savedSearch != nil || node.volumeLink { return false }
         if node.isGroup { return true }
         if node.children != nil {
             let stale = node.url.isFileURL && node.watcher == nil
@@ -349,6 +423,7 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         let symbol: String
         let color: NSColor
         switch node.symbol {
+        case "magnifyingglass", "folder.badge.gearshape": symbol = node.symbol; color = .systemBlue
         case "house": symbol = "house.fill"; color = .systemOrange
         case "desktopcomputer": symbol = node.symbol; color = .systemCyan
         case "arrow.down.circle": symbol = "arrow.down.circle.fill"; color = .systemTeal
@@ -356,8 +431,10 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         case "photo.fill": symbol = node.symbol; color = .systemBlue
         case "music.note": symbol = node.symbol; color = .systemPink
         case "film.fill": symbol = node.symbol; color = .systemPurple
+        case "iphone": symbol = "iphone"; color = .systemBlue
         case "internaldrive": symbol = "desktopcomputer"; color = .systemCyan
         case "externaldrive": symbol = "externaldrive.fill"; color = .systemGray
+        case "trash": symbol = "trash"; color = .secondaryLabelColor
         case "cloud.s3": symbol = "externaldrive.badge.icloud"; color = .systemOrange
         case "cloud.azure": symbol = "externaldrive.badge.icloud"; color = .systemBlue
         case "cloud.gcs": symbol = "externaldrive.badge.icloud"; color = .systemGreen
@@ -374,6 +451,19 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !selecting, let node = outline.item(atRow: outline.selectedRow) as? FolderNode else { return }
+        if node === trashRoot {
+            selecting = true; outline.deselectAll(nil); selecting = false
+            onShowTrash?()
+            return
+        }
+        if node === mobileRoot {
+            selecting = true; outline.deselectAll(nil); selecting = false
+            if mobileDevices == nil { mobileDevices = AppleMobileDevices() }
+            mobileDevices?.showWindow(nil)
+            return
+        }
+        if node === searchRoot { outline.expandItem(node); return }
+        if let saved = node.savedSearch { onSavedSearch?(saved); return }
         if node.isGroup { onNavigate?(node.url); return }
         onNavigate?(node.url)
     }

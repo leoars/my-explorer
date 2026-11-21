@@ -8,6 +8,174 @@ final class CloudStorageClientTests: XCTestCase, @unchecked Sendable {
         try CloudStorageClient(connection: CloudConnection(name: "Fixture", provider: .gcs, bucket: "fixture-bucket"),
                                credentials: CloudCredentials(accessToken: "fixture-token"), transport: transport)
     }
+    private func s3(_ transport: any CloudTransport) throws -> CloudStorageClient {
+        try CloudStorageClient(connection: CloudConnection(name: "Fixture", provider: .s3, bucket: "fixture-bucket"),
+                               credentials: CloudCredentials(accessKeyID: "EXAMPLE", secretAccessKey: "example"), transport: transport)
+    }
+    private func listPage(_ entries: String = "", next: String? = nil) -> CloudResponse {
+        let continuation = next.map { "<NextContinuationToken>\($0)</NextContinuationToken>" } ?? ""
+        let xml = "<ListBucketResult><IsTruncated>\(next != nil)</IsTruncated>\(continuation)\(entries)</ListBucketResult>"
+        return CloudResponse(statusCode: 200, body: Data(xml.utf8))
+    }
+
+    private func head(_ tag: String, size: Int = 20) -> CloudResponse {
+        .init(statusCode: 200, headers: ["Content-Length": String(size), "ETag": tag])
+    }
+    private var copyResult: CloudResponse {
+        .init(statusCode: 200, body: Data("<CopyObjectResult xmlns='http://s3.amazonaws.com/doc/2006-03-01/'><ETag>&quot;copied&quot;</ETag></CopyObjectResult>".utf8))
+    }
+
+    func testS3MoveVerifiesCopyBeforeConditionalDeletion() async throws {
+        let transport = RecordingCloudTransport(responses: [
+            head(#""source""#), listPage(), copyResult, head(#""copied""#), .init(statusCode: 204)
+        ])
+        let source = "raiz/a +%.txt"
+        let destination = "Sub Pasta/a +%.txt"
+        let copy = try await s3(transport).moveS3File(key: source, into: "Sub Pasta/")
+        XCTAssertEqual(copy.key, destination)
+        let requests = await transport.requests
+        XCTAssertEqual(requests.map(\.httpMethod), ["HEAD", "GET", "PUT", "HEAD", "DELETE"])
+        let put = requests[2]
+        XCTAssertEqual(put.url?.path, "/" + destination)
+        XCTAssertEqual(put.value(forHTTPHeaderField: "If-None-Match"), "*")
+        XCTAssertEqual(put.value(forHTTPHeaderField: "x-amz-copy-source-if-match"), #""source""#)
+        XCTAssertEqual(put.value(forHTTPHeaderField: "x-amz-copy-source"), "/fixture-bucket/raiz/a%20%2B%25.txt")
+        XCTAssertTrue(put.value(forHTTPHeaderField: "Authorization")?.contains("x-amz-copy-source-if-match") == true)
+        XCTAssertEqual(requests[4].value(forHTTPHeaderField: "If-Match"), #""source""#)
+        XCTAssertEqual(requests[4].url?.path, "/" + source)
+    }
+
+    func testS3MoveNeverDeletesAfterAnUnverifiedCopy() async throws {
+        let embeddedError = CloudResponse(statusCode: 200, body: Data("<Error><Code>InternalError</Code></Error>".utf8))
+        for results in [[embeddedError], [.init(statusCode: 503)], [copyResult, head(#""other""#)],
+                        [copyResult, head(#""copied""#, size: 19)]] {
+            let transport = RecordingCloudTransport(responses: [head(#""source""#), listPage()] + results)
+            do { _ = try await s3(transport).moveS3File(key: "a", into: "folder/"); XCTFail("Unverified copy") }
+            catch let error as S3MoveFailure { XCTAssertEqual(error.reason, .copyUnconfirmed) }
+            let requests = await transport.requests
+            XCTAssertFalse(requests.contains { $0.httpMethod == "DELETE" })
+        }
+    }
+
+    func testS3MoveRejectsExistingFolderOrFailedCopyPrecondition() async throws {
+        let original = head(#""source""#)
+        let folder = listPage("<CommonPrefixes><Prefix>folder/a/sub/</Prefix></CommonPrefixes>")
+        for (responses, reason): ([CloudResponse], CloudFailure.Reason) in [
+            ([original, folder], .conflict), ([original, listPage(), .init(statusCode: 412)], .preconditionFailed)
+        ] {
+            let transport = RecordingCloudTransport(responses: responses)
+            await assertFailure(reason) { try await self.s3(transport).moveS3File(key: "a", into: "folder/") }
+            let requests = await transport.requests
+            XCTAssertFalse(requests.contains { $0.httpMethod == "DELETE" })
+        }
+    }
+
+    func testS3MoveReportsWhichPartialDeletionOccurred() async throws {
+        for (status, reason): (Int, S3MoveFailure.Reason) in [(412, .sourceRetained), (403, .sourceRetained), (503, .deleteUnconfirmed)] {
+            let transport = RecordingCloudTransport(responses: [
+                head(#""source""#), listPage(), copyResult, head(#""copied""#), .init(statusCode: status)
+            ])
+            do { _ = try await s3(transport).moveS3File(key: "dir/a", into: ""); XCTFail("Partial deletion") }
+            catch let error as S3MoveFailure {
+                XCTAssertEqual(error.reason, reason)
+                XCTAssertEqual(error.sourceKey, "dir/a")
+                XCTAssertEqual(error.destinationKey, "a")
+            }
+            let requests = await transport.requests
+            XCTAssertEqual(requests.filter { $0.httpMethod == "DELETE" }.count, 1)
+        }
+    }
+
+    func testS3BackupRestoresContentTypeAndUserMetadataFromTheDownloadedVersion() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("backup")
+        let response = CloudResponse(statusCode: 200, headers: [
+            "Content-Length": "3", "ETag": #""original""#, "Content-Type": "video/quicktime",
+            "X-Amz-Meta-Project": "demo", "x-amz-meta-empty": "", "Server": "ignored"
+        ])
+        let transport = RecordingCloudTransport(responses: [response, head(#""restored""#, size: 3)],
+                                               downloadBody: Data([1, 2, 3]))
+        let client = try s3(transport)
+        let metadata = try await client.downloadS3Backup(key: "clip.mov", to: destination, matchingVersion: #""original""#)
+        XCTAssertEqual(metadata.contentType, "video/quicktime")
+        XCTAssertEqual(metadata.userMetadata, ["project": "demo", "empty": ""])
+        let persisted = try JSONDecoder().decode(S3ObjectMetadata.self, from: JSONEncoder().encode(metadata))
+        _ = try await client.upload(fileURL: destination, key: "clip.mov", s3Metadata: persisted)
+        let requests = await transport.requests
+        let restore = try XCTUnwrap(requests.last)
+        XCTAssertEqual(restore.value(forHTTPHeaderField: "If-None-Match"), "*")
+        XCTAssertEqual(restore.value(forHTTPHeaderField: "Content-Type"), "video/quicktime")
+        XCTAssertEqual(restore.value(forHTTPHeaderField: "X-Amz-Meta-Project"), "demo")
+        XCTAssertTrue(restore.value(forHTTPHeaderField: "Authorization")?.contains("x-amz-meta-empty;x-amz-meta-project") == true)
+        XCTAssertNil(restore.value(forHTTPHeaderField: "Server"))
+    }
+
+    func testS3BackupRejectsOmittedUserMetadataBeforePublishingBackup() async throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("backup")
+        let transport = RecordingCloudTransport(responses: [
+            .init(statusCode: 200, headers: ["Content-Length": "0", "ETag": #""e""#, "x-amz-missing-meta": "2"])
+        ])
+        await assertFailure(.malformedResponse) {
+            try await self.s3(transport).downloadS3Backup(key: "clip.mov", to: destination, matchingVersion: #""e""#)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    func testS3FolderSignsAnEmptyConditionalPutAtTheExactPrefix() async throws {
+        for prefix in ["", "parent +/sub/"] {
+            let transport = RecordingCloudTransport(responses: [
+                listPage(), CloudResponse(statusCode: 200, headers: ["ETag": "\"marker\""])
+            ])
+            let client = try s3(transport)
+            let name = "pasta #+東京"
+            let key = try await client.createS3Folder(prefix: prefix, name: name)
+            let requests = await transport.requests
+            XCTAssertEqual(key, prefix + name + "/")
+            XCTAssertEqual(requests.map(\.httpMethod), ["GET", "PUT"])
+            let request = try XCTUnwrap(requests.last)
+            XCTAssertEqual(URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.path, "/" + key)
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Length"), "0")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "If-None-Match"), "*")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "x-amz-content-sha256"), S3SignatureV4.emptyPayloadHash)
+            XCTAssertTrue(request.value(forHTTPHeaderField: "Authorization")?.contains("if-none-match") == true)
+            XCTAssertTrue(request.httpBody?.isEmpty ?? true)
+        }
+    }
+
+    func testS3FolderDetectsFileOrPrefixOnLaterPagesAndConcurrentMarkerCreation() async throws {
+        for collision in ["<Contents><Key>parent/new</Key><Size>4</Size></Contents>",
+                          "<CommonPrefixes><Prefix>parent/new/</Prefix></CommonPrefixes>"] {
+            let transport = RecordingCloudTransport(responses: [listPage(next: "page2"), listPage(collision)])
+            let client = try s3(transport)
+            await assertFailure(.conflict) { try await client.createS3Folder(prefix: "parent/", name: "new") }
+            let requests = await transport.requests
+            XCTAssertEqual(requests.map(\.httpMethod), ["GET", "GET"])
+        }
+        for (status, reason) in [(412, CloudFailure.Reason.conflict), (409, .conflict), (403, .permissionDenied)] {
+            let transport = RecordingCloudTransport(responses: [listPage(), CloudResponse(statusCode: status)])
+            let client = try s3(transport)
+            await assertFailure(reason) { try await client.createS3Folder(prefix: "", name: "new") }
+            let requests = await transport.requests
+            XCTAssertEqual(requests.map(\.httpMethod), ["GET", "PUT"])
+        }
+    }
+
+    func testS3FolderRejectsInvalidComponentsAndOtherProvidersBeforeNetwork() async throws {
+        let transport = RecordingCloudTransport(responses: [])
+        let client = try s3(transport)
+        for (prefix, name) in [("", ""), ("", ".."), ("", "foo/bar"), ("", "a\\b"), ("x", "b"), ("/", "b"),
+                               ("a//", "b"), ("../", "b"), ("", String(repeating: "a", count: 1024))] {
+            await assertFailure(.invalidKey) { try await client.createS3Folder(prefix: prefix, name: name) }
+        }
+        let other = try self.client(transport)
+        await assertFailure(.invalidConfiguration) { try await other.createS3Folder(prefix: "", name: "new") }
+        let requests = await transport.requests
+        XCTAssertTrue(requests.isEmpty)
+    }
+
     private func fixture() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("MyExplorer.CloudTests.\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

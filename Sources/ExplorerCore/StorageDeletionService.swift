@@ -66,6 +66,7 @@ public actor StorageDeletionService {
         public init(entries: Int = 10_000, depth: Int = 64) { self.entries = entries; self.depth = depth }
     }
     private let clientFactory: @Sendable (UUID) async throws -> CloudStorageClient
+    private let trashLibrary: TrashLibrary?
     private let trash: any StorageTrash
     private let clock: @Sendable () -> Date
     private let limits: Limits
@@ -77,7 +78,8 @@ public actor StorageDeletionService {
 
     public init(clientFactory: @escaping @Sendable (UUID) async throws -> CloudStorageClient,
                 trash: any StorageTrash = SystemStorageTrash(), clock: @escaping @Sendable () -> Date = { Date() },
-                limits: Limits = .init(), planLifetime: TimeInterval = 300) {
+                limits: Limits = .init(), planLifetime: TimeInterval = 300, trashLibrary: TrashLibrary? = nil) {
+        self.trashLibrary = trashLibrary
         self.clientFactory = clientFactory; self.trash = trash; self.clock = clock
         self.limits = limits; lifetime = planLifetime
     }
@@ -190,15 +192,17 @@ public actor StorageDeletionService {
                         catch { throw StorageDeletionFailure(Task.isCancelled ? .cancelled : .unsupportedEntry) }
                     }
                     try active(planID)
-                    if let undoHistory {
+                    if undoHistory != nil || trashLibrary != nil {
                         let original = try TrashRestoreOrigin(expected.source)
                         if let location = try await trash.trashReturningURL(expected.source) {
-                            await undoHistory.recordTrash(original, at: location, group: planID)
-                        }
+                            await undoHistory?.recordTrash(original, at: location, group: planID)
+                            completed.append(expected.source)
+                            try await trashLibrary?.record(TrashedItem(origin: original, location: location))
+                        } else { completed.append(expected.source) }
                     } else {
                         try await trash.trash(expected.source)
+                        completed.append(expected.source)
                     }
-                    completed.append(expected.source)
                 case .remote(let source, let connection, let key, let expected):
                     let id = connection.id
                     let client = try await clientFactory(id)
@@ -219,12 +223,22 @@ public actor StorageDeletionService {
                         }
                         guard await authorizationCheck(url) else { throw StorageDeletionFailure(.notAuthorized) }
                         try active(planID)
+                        var backup: S3DeletedItem?
+                        if undoHistory != nil, connection.provider == .s3 {
+                            backup = try await S3DeletedItem.capture(actual, version: version, client: client, factory: clientFactory)
+                            guard await authorizationCheck(url) else { throw StorageDeletionFailure(.notAuthorized) }
+                            try active(planID)
+                        }
                         switch try await client.delete(key: object.key, matchingVersion: version) {
-                        case .acknowledged: completed.append(url)
+                        case .acknowledged:
+                            if let backup { await undoHistory?.recordS3Trash(backup, group: planID) }
+                            completed.append(url)
                         case .absent: throw StorageDeletionFailure(.notFound)
                         case .changed:
                             throw StorageDeletionFailure(.changed)
-                        case .indeterminate: throw StorageDeletionFailure(.indeterminate, indeterminate: [url])
+                        case .indeterminate:
+                            if let backup { await undoHistory?.recordS3Trash(backup, group: planID) }
+                            throw StorageDeletionFailure(.indeterminate, indeterminate: [url])
                         }
                     }
                     if key.hasSuffix("/") {

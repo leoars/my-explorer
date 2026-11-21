@@ -5,11 +5,15 @@ import Darwin
 /// Uses foreground ephemeral sessions: redirects remain under our control and no credentials are cached.
 public struct URLSessionCloudTransport: CloudTransport, Sendable {
     private let configuration: URLSessionConfiguration
-    public init() { configuration = .ephemeral }
+    private let returnRedirects: Bool
+    public init() { configuration = .ephemeral; returnRedirects = false }
     /// Tests can supply a URLProtocol without opening sockets or using real accounts.
-    init(configuration: URLSessionConfiguration) { self.configuration = configuration.copy() as! URLSessionConfiguration }
+    init(configuration: URLSessionConfiguration, returnRedirects: Bool = false) {
+        self.configuration = configuration.copy() as! URLSessionConfiguration
+        self.returnRedirects = returnRedirects
+    }
     public func send(_ request: URLRequest) async throws -> CloudResponse {
-        try await CloudHTTPTransaction(request: request, operation: .metadata, progress: nil, configuration: configuration).run()
+        try await CloudHTTPTransaction(request: request, operation: .metadata, progress: nil, configuration: configuration, returnRedirects: returnRedirects).run()
     }
     public func upload(_ request: URLRequest, fileURL: URL, progress: CloudProgressHandler? = nil) async throws -> CloudResponse {
         try await CloudHTTPTransaction(request: request, operation: .upload(fileURL), progress: progress, configuration: configuration).run()
@@ -37,6 +41,7 @@ private final class CloudHTTPTransaction: NSObject, URLSessionDataDelegate, URLS
     private let operation: Operation
     private let progress: CloudProgressHandler?
     private let configuration: URLSessionConfiguration
+    private let returnRedirects: Bool
     private let lock = NSLock()
     private var continuation: CheckedContinuation<CloudResponse, any Error>?
     private var session: URLSession?
@@ -48,9 +53,9 @@ private final class CloudHTTPTransaction: NSObject, URLSessionDataDelegate, URLS
     private var downloadFailure: CloudFailure?
     private let maximumMetadataBytes = 16 * 1024 * 1024
 
-    init(request: URLRequest, operation: Operation, progress: CloudProgressHandler?, configuration: URLSessionConfiguration) {
+    init(request: URLRequest, operation: Operation, progress: CloudProgressHandler?, configuration: URLSessionConfiguration, returnRedirects: Bool = false) {
         self.request = request; self.operation = operation; self.progress = progress
-        self.configuration = configuration
+        self.configuration = configuration; self.returnRedirects = returnRedirects
     }
 
     func run() async throws -> CloudResponse {
@@ -118,6 +123,7 @@ private final class CloudHTTPTransaction: NSObject, URLSessionDataDelegate, URLS
 
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+        if returnRedirects { completionHandler(nil); return }
         guard CloudRedirectPolicy.allows(from: self.request.url, to: request.url) else {
             completionHandler(nil)
             finish(.failure(CloudFailure(.insecureTransport)))

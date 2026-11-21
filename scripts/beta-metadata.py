@@ -249,7 +249,7 @@ def build_info(app, configuration, state_path):
         plistlib.dump(metadata, stream, sort_keys=True)
 
 
-def verified_metadata(app, allow_dirty):
+def verified_metadata(app, allow_dirty, allow_public=False):
     resources = app / "Contents/Resources"
     metadata = read_json(resources / "BuildInfo.json")
     if not isinstance(metadata, dict) or set(metadata) != BUILD_KEYS:
@@ -269,7 +269,7 @@ def verified_metadata(app, allow_dirty):
     state = confirm_state({key: metadata.get(key) for key in ["commit", "dirty", "sourceDigestSHA256"]})
     if state["dirty"] and not allow_dirty:
         raise RuntimeError("Dirty sources/build refused. --allow-dirty is for a local rehearsal only")
-    if not metadata["releaseChannel"].startswith("private-beta"):
+    if not (metadata["releaseChannel"].startswith("private-beta") or (allow_public and metadata["releaseChannel"] == "public")):
         raise RuntimeError("The bundle is not marked as a private-beta channel")
     verify_signing(app)
     return metadata

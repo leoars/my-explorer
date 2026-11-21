@@ -6,9 +6,11 @@ My Explorer es un gestor de archivos nativo para macOS. Combina el árbol de car
 
 ![Lista en español filtrada por nombre, con dos pestañas abiertas](docs/screenshots/navigation-es.png)
 
-## Instalar la aplicación firmada
+## Instalar la versión 28
 
-Abre el DMG de la versión preliminar, copia **My Explorer** a **Aplicaciones**, expulsa la imagen y abre la aplicación. La versión 27 tiene firma Apple Development y no está notarizada. [GitHub Releases](https://github.com/leoars/my-explorer/releases/tag/v0.1.0-private-beta.12-build27)
+Abre el DMG, copia **My Explorer** en **Aplicaciones**, expulsa la imagen de disco y abre la aplicación. Esta versión está firmada con un certificado Apple Development y no ha sido notarizada por Apple. [Descargar para Mac](https://github.com/leoars/my-explorer/releases/tag/v0.1.0)
+
+En la versión 28 puedes importar un CSV con tus credenciales de S3, elegir un bucket, crear carpetas y mover archivos entre ellas arrastrándolos o con **Cortar** y **Pegar**. Si eliminas un archivo de S3 desde My Explorer, puedes restaurarlo con **⌘Z** o **Ctrl+Z** durante la misma sesión.
 
 ## Compilar e instalar
 

@@ -19,6 +19,12 @@ enum L10n {
 
 extension Localization {
     func fileKind(_ entry: FileEntry) -> String {
+        let kind = baseKind(entry)
+        guard let state = entry.iCloudAvailability else { return kind }
+        return kind + " · iCloud · " + text("icloud." + state.rawValue)
+    }
+
+    private func baseKind(_ entry: FileEntry) -> String {
         if entry.isSymbolicLink { return text("kind.symbolic_link") }
         if entry.canNavigate { return text("kind.folder") }
         if entry.isPackage { return text(entry.url.pathExtension.lowercased() == "app" ? "kind.application" : "kind.package") }

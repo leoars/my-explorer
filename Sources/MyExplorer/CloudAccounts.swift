@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import AppKit
 import Security
+import LocalAuthentication
 import ExplorerCore
 
 private enum CloudKeychain {
@@ -19,12 +20,19 @@ private enum CloudKeychain {
             guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else { throw CloudFailure(.io) }
         } else if status != errSecSuccess { throw CloudFailure(.io) }
     }
-    static func load(id: UUID) throws -> CloudCredentials {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+    static func load(id: UUID, allowInteraction: Bool = true) throws -> CloudCredentials {
+        var query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service, kSecAttrAccount as String: id.uuidString,
             kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
+        if !allowInteraction {
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            query[kSecUseAuthenticationContext as String] = context
+        }
         var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { throw CloudFailure(.notFound) }
+        guard status == errSecSuccess,
               let data = result as? Data,
               let values = try JSONSerialization.jsonObject(with: data) as? [String: String] else {
             throw CloudFailure(.authenticationRequired)
@@ -47,40 +55,142 @@ final class CloudAccounts {
     private let useKeychain: Bool
     private var memoryCredentials: [UUID: CloudCredentials] = [:]
     private(set) var connections: [CloudConnection]
+    /// Old IDs are used only to restore UI navigation. They never grant cloud access.
+    private(set) var connectionAliases: [UUID: UUID] = [:]
     private(set) var revision = UUID()
     var onChange: (() -> Void)?
     var clientFactory: ((CloudConnection, CloudCredentials) throws -> CloudStorageClient)?
     init(defaults: UserDefaults = .standard, useKeychain: Bool = true) {
         self.defaults = defaults; self.useKeychain = useKeychain
         connections = defaults.data(forKey: "cloudConnections").flatMap { try? JSONDecoder().decode([CloudConnection].self, from: $0) } ?? []
+        for (key, value) in defaults.dictionary(forKey: "cloudConnectionAliases") ?? [:] {
+            if let id = UUID(uuidString: key), let target = value as? String, let canonical = UUID(uuidString: target) {
+                connectionAliases[id] = canonical
+            }
+        }
     }
     func client(id: UUID) async throws -> CloudStorageClient {
         guard let connection = connections.first(where: { $0.id == id }) else { throw CloudFailure(.invalidConfiguration) }
         let credentials: CloudCredentials
-        if useKeychain { credentials = try await Task.detached { try CloudKeychain.load(id: id) }.value }
+        if useKeychain {
+            do { credentials = try await Task.detached { try CloudKeychain.load(id: id) }.value }
+            catch let error as CloudFailure where error.reason == .notFound { throw CloudFailure(.authenticationRequired) }
+        }
         else if let stored = memoryCredentials[id] { credentials = stored }
         else { throw CloudFailure(.authenticationRequired) }
         if let clientFactory { return try clientFactory(connection, credentials) }
         return try CloudStorageClient(connection: connection, credentials: credentials)
     }
-    func save(_ connection: CloudConnection, credentials: CloudCredentials) async throws {
-        // Validate configuration before writing either metadata or a secret.
+    private func storedCredentials(_ id: UUID, allowInteraction: Bool) throws -> CloudCredentials {
+        if useKeychain { return try CloudKeychain.load(id: id, allowInteraction: allowInteraction) }
+        guard let saved = memoryCredentials[id] else { throw CloudFailure(.notFound) }
+        return saved
+    }
+
+    private static func sameS3Destination(_ lhs: CloudConnection, _ rhs: CloudConnection) -> Bool {
+        lhs.provider == .s3 && rhs.provider == .s3 && lhs.bucket == rhs.bucket &&
+            (lhs.region ?? "us-east-1") == (rhs.region ?? "us-east-1")
+    }
+
+    private static func sameS3Credentials(_ lhs: CloudCredentials, _ rhs: CloudCredentials) -> Bool {
+        guard let id = lhs.accessKeyID, !id.isEmpty, let secret = lhs.secretAccessKey, !secret.isEmpty,
+              let otherID = rhs.accessKeyID, let otherSecret = rhs.secretAccessKey else { return false }
+        return id.utf8.elementsEqual(otherID.utf8) && secret.utf8.elementsEqual(otherSecret.utf8) &&
+            (lhs.sessionToken ?? "").utf8.elementsEqual((rhs.sessionToken ?? "").utf8)
+    }
+
+    /// Keep identity lookup and publication in one MainActor turn, including concurrent Connect requests.
+    @discardableResult
+    func save(_ connection: CloudConnection, credentials: CloudCredentials, reuseExistingS3: Bool = false) async throws -> UUID {
         _ = try CloudStorageClient(connection: connection, credentials: credentials)
-        if useKeychain { try await Task.detached { try CloudKeychain.save(credentials, id: connection.id) }.value }
+        if reuseExistingS3 {
+            var unavailable: Error?
+            for candidate in connections where candidate.id != connection.id && Self.sameS3Destination(connection, candidate) {
+                do {
+                    let saved = try storedCredentials(candidate.id, allowInteraction: true)
+                    if Self.sameS3Credentials(saved, credentials) { return candidate.id }
+                } catch let error as CloudFailure where error.reason == .notFound { continue }
+                catch { unavailable = error }
+            }
+            if let unavailable { throw unavailable }
+        }
+        var updated = connections
+        if let index = updated.firstIndex(where: { $0.id == connection.id }) { updated[index] = connection }
+        else { updated.append(connection) }
+        let data = try JSONEncoder().encode(updated)
+        if useKeychain { try CloudKeychain.save(credentials, id: connection.id) }
         else { memoryCredentials[connection.id] = credentials }
-        connections.removeAll { $0.id == connection.id }
-        connections.append(connection)
+        if connectionAliases.removeValue(forKey: connection.id) != nil { persistAliases() }
+        publish(updated, data: data)
+        return connection.id
+    }
+
+    /// Compare credentials only for repeated S3 destinations. A locked Keychain defers their migration.
+    @discardableResult
+    func consolidateDuplicateS3Connections(allowInteraction: Bool = false) -> [UUID: UUID] {
+        var aliases: [UUID: UUID] = [:]
+        var keys: [UUID: CloudCredentials] = [:]
+        var kept: [CloudConnection] = []
+        for connection in connections {
+            let candidates = kept.filter { Self.sameS3Destination($0, connection) }
+            if !candidates.isEmpty, let current = try? storedCredentials(connection.id, allowInteraction: allowInteraction) {
+                let match = candidates.first { candidate in
+                    if keys[candidate.id] == nil {
+                        keys[candidate.id] = try? storedCredentials(candidate.id, allowInteraction: allowInteraction)
+                    }
+                    return keys[candidate.id].map { Self.sameS3Credentials($0, current) } ?? false
+                }
+                if let match { aliases[connection.id] = match.id; continue }
+                keys[connection.id] = current
+            }
+            kept.append(connection)
+        }
+        if !aliases.isEmpty, let data = try? JSONEncoder().encode(kept) {
+            connectionAliases = connectionAliases.mapValues { aliases[$0] ?? $0 }
+            connectionAliases.merge(aliases) { _, new in new }
+            persistAliases()
+            let pending = (defaults.stringArray(forKey: "cloudKeychainCleanup") ?? []) + aliases.keys.map(\.uuidString)
+            defaults.set(pending, forKey: "cloudKeychainCleanup")
+            publish(kept, data: data)
+        }
+        finishCredentialCleanup()
+        return connectionAliases
+    }
+
+    private func persistAliases() {
+        defaults.set(Dictionary(uniqueKeysWithValues: connectionAliases.map { ($0.key.uuidString, $0.value.uuidString) }),
+                     forKey: "cloudConnectionAliases")
+    }
+
+    private func publish(_ updated: [CloudConnection], data: Data) {
+        defaults.set(data, forKey: "cloudConnections")
+        connections = updated
         revision = UUID()
-        defaults.set(try JSONEncoder().encode(connections), forKey: "cloudConnections")
         onChange?()
     }
+
+    private func finishCredentialCleanup() {
+        guard let pending = defaults.stringArray(forKey: "cloudKeychainCleanup"), !pending.isEmpty else { return }
+        let remainder = pending.filter { raw in
+            guard let id = UUID(uuidString: raw), !connections.contains(where: { $0.id == id }) else { return false }
+            do {
+                if useKeychain { try CloudKeychain.remove(id: id) }
+                memoryCredentials[id] = nil
+                return false
+            } catch { return true }
+        }
+        if remainder.isEmpty { defaults.removeObject(forKey: "cloudKeychainCleanup") }
+        else { defaults.set(remainder, forKey: "cloudKeychainCleanup") }
+    }
+
     func remove(_ id: UUID) throws {
+        let updated = connections.filter { $0.id != id }
+        let data = try JSONEncoder().encode(updated)
         if useKeychain { try CloudKeychain.remove(id: id) }
         memoryCredentials[id] = nil
-        connections.removeAll { $0.id == id }
-        revision = UUID()
-        defaults.set(try? JSONEncoder().encode(connections), forKey: "cloudConnections")
-        onChange?()
+        connectionAliases = connectionAliases.filter { $0.key != id && $0.value != id }
+        persistAliases()
+        publish(updated, data: data)
     }
     func title(for url: URL) -> String {
         if url.scheme == RemoteLocation.scheme && (url.host == nil || url.host == "") { return L10n.text("cloud.title") }

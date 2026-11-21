@@ -9,6 +9,12 @@ public struct SharedFileFailure: Error, Sendable {
     public init(_ reason: AutomationError, completed: [URL]) { self.reason = reason; self.completed = completed }
 }
 
+/// Earlier files in this drag have already moved when a later file fails.
+public struct S3MoveBatchFailure: Error, Sendable {
+    public let completed: [URL]
+    public let cause: any Error
+}
+
 /// One gate is shared by copies of the facade, including its GUI and broker owners.
 /// Reentrant mutation requests fail explicitly instead of waiting behind an unknown job.
 public actor SharedOperationGate {
@@ -266,6 +272,42 @@ public struct SharedFileOperations: Sendable {
     public func move(_ urls: [URL], to destination: URL) async throws -> [URL] {
         try await gate.run { try await FileMutationService().transfer(urls, to: destination, move: true) }
     }
+    private static func s3MovePlan(_ sources: [URL], to destination: URL) throws -> (id: UUID, prefix: String, keys: [String]) {
+        guard !sources.isEmpty, let target = RemoteLocation.parse(destination) else { throw CloudFailure(.invalidConfiguration) }
+        var destinations = Set<Data>()
+        let keys = try sources.map { url in
+            guard let source = RemoteLocation.parse(url), source.connectionID == target.connectionID else { throw CloudFailure(.invalidConfiguration) }
+            let key = try CloudStorageClient.s3MoveDestination(key: source.key, into: target.key)
+            guard destinations.insert(Data(key.utf8)).inserted else { throw CloudFailure(.conflict) }
+            return source.key
+        }
+        return (target.connectionID, target.key, keys)
+    }
+
+    public static func canMoveS3Files(_ sources: [URL], to destination: URL) -> Bool {
+        (try? s3MovePlan(sources, to: destination)) != nil
+    }
+
+    public func moveS3Files(_ sources: [URL], to destination: URL) async throws -> [URL] {
+        try await gate.run {
+            let plan = try Self.s3MovePlan(sources, to: destination)
+            let client = try await self.clientFactory(plan.id)
+            guard client.connection.provider == .s3, client.connection.id == plan.id else { throw CloudFailure(.invalidConfiguration) }
+            var completed: [URL] = []
+            for key in plan.keys {
+                do {
+                    try Task.checkCancellation()
+                    let moved = try await client.moveS3File(key: key, into: plan.prefix)
+                    completed.append(RemoteLocation.url(connectionID: plan.id, key: moved.key))
+                } catch {
+                    if completed.isEmpty { throw error }
+                    throw S3MoveBatchFailure(completed: completed, cause: error)
+                }
+            }
+            return completed
+        }
+    }
+
     /// Interactive local transfers share the same mutation gate as cloud and automation operations.
     public func transferLocal(_ sources: [URL], to destination: URL, move: Bool,
                               resolveConflict: @escaping @Sendable (StorageConflict) async -> StorageConflictChoice,
@@ -282,6 +324,21 @@ public struct SharedFileOperations: Sendable {
                           control: LocalTransferControl = LocalTransferControl()) async throws -> [URL] {
         try await gate.run { try await self.localTransfers.undo(resolveTrashConflict: resolveTrashConflict, progress: progress, control: control) }
     }
+    public func restoreTrashItem(_ entry: TrashEntry, into folder: URL?, keepBoth: Bool = false) async throws -> URL {
+        try await gate.run {
+            let url = try await TrashLibrary.shared.restore(entry, into: folder, keepBoth: keepBoth)
+            await localTransfers.forgetTrash(location: entry.location)
+            return url
+        }
+    }
+
+    public func eraseTrashItem(_ entry: TrashEntry) async throws {
+        try await gate.run {
+            try await TrashLibrary.shared.erase(entry)
+            await localTransfers.forgetTrash(location: entry.location)
+        }
+    }
+
     public func clearLocalTransferHistory() async {
         // Called after in-flight jobs have stopped during orderly application shutdown.
         await localTransfers.clearHistory()
@@ -290,7 +347,14 @@ public struct SharedFileOperations: Sendable {
         try await gate.run { try await FileMutationService().rename(url, to: name) }
     }
     public func newFolder(in url: URL, name: String) async throws -> URL {
-        try await gate.run { try await FileMutationService().newFolder(in: url, name: name) }
+        try await gate.run {
+            if let location = RemoteLocation.parse(url) {
+                let client = try await self.clientFactory(location.connectionID)
+                let key = try await client.createS3Folder(prefix: location.key, name: name)
+                return RemoteLocation.url(connectionID: location.connectionID, key: key)
+            }
+            return try await FileMutationService().newFolder(in: url, name: name)
+        }
     }
     public func trash(_ urls: [URL]) async throws -> [URL] {
         try await gate.run { try await FileMutationService().trash(urls) }

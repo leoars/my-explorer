@@ -38,22 +38,39 @@ final class FileCommands: NSObject, NSWindowDelegate {
     var pasteURLs: [URL] {
         FileClipboard.readURLs(from: pasteboard)
     }
+    func canCut(_ entries: [FileEntry]) -> Bool {
+        guard !isBusy, !shuttingDown, let first = entries.first else { return false }
+        if first.url.isFileURL { return entries.allSatisfy { $0.url.isFileURL } }
+        guard let location = RemoteLocation.parse(first.url),
+              CloudAccounts.shared.connections.contains(where: { $0.id == location.connectionID && $0.provider == .s3 }) else { return false }
+        return entries.allSatisfy { entry in
+            guard !entry.isDirectory, let source = RemoteLocation.parse(entry.url) else { return false }
+            return source.connectionID == location.connectionID && !source.key.isEmpty && !source.key.hasSuffix("/")
+        }
+    }
+    private func isCut(_ urls: [URL]) -> Bool {
+        cutChangeCount == pasteboard.changeCount && Set(urls.map(\.explorerIdentity)) == cutPaths
+    }
     func canPaste(into directory: URL) -> Bool {
         guard !shuttingDown, clipboardTask == nil else { return false }
         let urls = pasteURLs
         guard !urls.isEmpty else { return false }
-        if !directory.isFileURL && cutChangeCount == pasteboard.changeCount { return false }
-        return canTransfer(urls, to: directory, move: false)
+        return canTransfer(urls, to: directory, move: isCut(urls))
     }
     func canTransfer(_ urls: [URL], to directory: URL, move: Bool) -> Bool {
         guard !shuttingDown, !isBusy, !urls.isEmpty else { return false }
-        if move { return directory.isFileURL && urls.allSatisfy(\.isFileURL) }
+        if move {
+            if directory.isFileURL { return urls.allSatisfy(\.isFileURL) }
+            guard let target = RemoteLocation.parse(directory),
+                  CloudAccounts.shared.connections.contains(where: { $0.id == target.connectionID && $0.provider == .s3 }) else { return false }
+            return SharedFileOperations.canMoveS3Files(urls, to: directory)
+        }
         return directory.isFileURL ? (urls.allSatisfy(\.isFileURL) || urls.allSatisfy { RemoteLocation.parse($0) != nil }) :
             RemoteLocation.parse(directory) != nil && urls.allSatisfy(\.isFileURL)
     }
     @discardableResult
     func copy(_ entries: [FileEntry], cut: Bool) -> Task<Void, Never>? {
-        guard !shuttingDown, !entries.isEmpty, !cut || entries.allSatisfy({ $0.url.isFileURL }) else { return nil }
+        guard !shuttingDown, !entries.isEmpty, !cut || canCut(entries) else { return nil }
         clipboardTask?.cancel()
         pendingPaste?.cancel(); pendingPaste = nil
         copyGeneration += 1
@@ -89,7 +106,7 @@ final class FileCommands: NSObject, NSWindowDelegate {
         guard !isBusy, canPaste(into: directory) else { return }
         let urls = pasteURLs
         guard !urls.isEmpty else { return }
-        let moving = move || (cutChangeCount == pasteboard.changeCount && Set(urls.map(\.path)) == cutPaths)
+        let moving = move || isCut(urls)
         transfer(urls, to: directory, move: moving, consumesClipboard: true)
     }
     func transfer(_ urls: [URL], to directory: URL, move: Bool, consumesClipboard: Bool = false) {
@@ -110,6 +127,21 @@ final class FileCommands: NSObject, NSWindowDelegate {
                     throw error
                 }
             }
+        } else if move {
+            let affectedDirectories = Set((urls.map(\.explorerParent) + [directory]).map(\.explorerIdentity))
+            run("operation.move", refreshing: affectedDirectories) {
+                do {
+                    let moved = try await AppAutomation.files.moveS3Files(urls, to: directory)
+                    if consumesClipboard { await self.finishMovedClipboard(urls, move: true, changeCount: clipboardCount, remaining: []) }
+                    return moved
+                } catch let partial as S3MoveBatchFailure {
+                    if consumesClipboard {
+                        let remaining = Array(urls.dropFirst(partial.completed.count))
+                        await self.finishMovedClipboard(urls, move: true, changeCount: clipboardCount, remaining: remaining)
+                    }
+                    throw partial
+                }
+            }
         } else {
             run("cloud.transfer.title") {
                 return try await AppAutomation.files.copy(urls, to: directory, resolveConflict: { conflict in
@@ -120,11 +152,11 @@ final class FileCommands: NSObject, NSWindowDelegate {
             }
         }
     }
-    private func finishMovedClipboard(_ sources: [URL], move: Bool, changeCount: Int) async {
+    private func finishMovedClipboard(_ sources: [URL], move: Bool, changeCount: Int, remaining unconfirmedSources: [URL]? = nil) async {
         guard !shuttingDown, move, clipboardTask == nil, pasteboard.changeCount == changeCount,
               Set(pasteURLs.map(\.explorerIdentity)) == Set(sources.map(\.explorerIdentity)) else { return }
         let wasCut = cutChangeCount == changeCount
-        let remaining = sources.filter { (try? FileManager.default.attributesOfItem(atPath: $0.path)) != nil }
+        let remaining = unconfirmedSources ?? sources.filter { (try? FileManager.default.attributesOfItem(atPath: $0.path)) != nil }
         if remaining.isEmpty {
             cutPaths = []; cutChangeCount = nil
             pasteboard.clearContents()
@@ -150,7 +182,7 @@ final class FileCommands: NSObject, NSWindowDelegate {
     func undo() {
         guard !shuttingDown, !isBusy, undoKind != nil else { return }
         let control = LocalTransferControl(); localControl = control
-        run("command.undo_files") {
+        run("command.undo_files", refreshingResultParents: true) {
             try await AppAutomation.files.undoLocal(resolveTrashConflict: { await self.resolveConflict($0, restoring: true) }, progress: { progress in
                 Task { @MainActor in self.updateProgress(progress) }
             }, control: control)
@@ -202,8 +234,15 @@ final class FileCommands: NSObject, NSWindowDelegate {
     func rename(_ entry: FileEntry, to name: String) {
         run("command.rename") { [try await AppAutomation.files.rename(entry.url, to: name)] }
     }
+    func canCreateFolder(in directory: URL) -> Bool {
+        guard !shuttingDown, !isBusy else { return false }
+        if directory.isFileURL { return true }
+        guard let location = RemoteLocation.parse(directory) else { return false }
+        return CloudAccounts.shared.connections.contains { $0.id == location.connectionID && $0.provider == .s3 }
+    }
+
     func newFolder(in directory: URL) {
-        guard !shuttingDown, directory.isFileURL, !isBusy else { return }
+        guard canCreateFolder(in: directory) else { return }
         askName(title: "command.new_folder", initial: L10n.text("folder.default")) { name in
             self.run("command.new_folder") { [try await AppAutomation.files.newFolder(in: directory, name: name)] }
         }
@@ -280,7 +319,21 @@ final class FileCommands: NSObject, NSWindowDelegate {
         scroll.documentView = text
         alert.accessoryView = scroll
         alert.addButton(withTitle: L10n.text("dialog.confirm"))
-        alert.beginSheetModal(for: window)
+        let editableItem = entry.url.isFileURL && entry.secureFolderURL == nil && !entry.isSymbolicLink && !SecureFolderService.isSessionURL(entry.url)
+        if editableItem {
+            alert.addButton(withTitle: L10n.text("permissions.title"))
+            alert.addButton(withTitle: L10n.text("search.tags_edit"))
+            Task { [weak text] in
+                let tags = try? await Task.detached(priority: .utility) { try FinderTags.read(entry.url) }.value
+                guard let tags, !tags.isEmpty, let text else { return }
+                text.string += "\n\n" + L10n.text("search.tags") + "\n" + tags.joined(separator: ", ")
+            }
+        }
+        alert.beginSheetModal(for: window) { response in
+            guard editableItem else { return }
+            if response == .alertSecondButtonReturn { PermissionsDialog.present(for: entry, in: window) }
+            if response == .alertThirdButtonReturn { SearchTagEditor.present(urls: [entry.url], owner: window) }
+        }
     }
     func openWith(_ entries: [FileEntry]) {
         guard !shuttingDown, let window = owner?.window, !entries.isEmpty, entries.allSatisfy({ $0.url.isFileURL }) else { return }
@@ -297,17 +350,24 @@ final class FileCommands: NSObject, NSWindowDelegate {
                 }
         }
     }
-    func run(_ title: String, operation: @escaping @Sendable () async throws -> [URL]) {
+    func run(_ title: String, refreshing directories: Set<String> = [], refreshingResultParents: Bool = false,
+             operation: @escaping @Sendable () async throws -> [URL]) {
         guard !shuttingDown, !isBusy else { return }
         let tabID = owner?.workspace.activeID
         activeOperationID = UUID()
         showProgress(title)
+        func refresh(_ urls: [URL]) {
+            guard !shuttingDown else { return }
+            let hasRemoteResults = refreshingResultParents && urls.contains { !$0.isFileURL }
+            let resultParents = hasRemoteResults ? urls.map { $0.explorerParent.explorerIdentity } : []
+            owner?.operationFinished(urls: urls, tabID: tabID, refreshing: directories.union(resultParents))
+        }
         task = Task {
             do {
-                let urls = try await operation()
-                if !self.shuttingDown { self.owner?.operationFinished(urls: urls, tabID: tabID) }
+                refresh(try await operation())
             } catch {
-                if !self.shuttingDown { self.owner?.operationFinished(urls: [], tabID: tabID) }
+                let restored = refreshingResultParents ? (error as? LocalTransferFailure)?.completed : nil
+                refresh(restored ?? (error as? S3MoveBatchFailure)?.completed ?? [])
                 self.panel?.close()
                 if self.shuttingDown { self.recordInterruption(error, operation: title) }
                 else if let failure = error as? LocalTransferFailure {
@@ -341,10 +401,16 @@ final class FileCommands: NSObject, NSWindowDelegate {
                 } else if let failure = error as? StorageDeletionFailure {
                     if !failure.completed.isEmpty || !failure.indeterminate.isEmpty { self.presentError(key: "deletion.partial") }
                     else if failure.reason == .changed { self.presentError(key: "deletion.changed") }
+                    else if failure.reason == .limitExceeded { self.presentError(key: "storage.error.limitExceeded") }
+                    else if failure.reason != .cancelled, let reason = failure.cloudReason { self.presentError(key: "cloud.error.\(reason.rawValue)") }
                     else if failure.reason != .cancelled { self.presentError(key: "error.operation") }
                 } else if let failure = error as? SharedFileFailure {
                     if !failure.completed.isEmpty { self.presentError(key: "operation.partial") }
                     else if failure.reason != .cancelled { self.presentError(key: failure.reason == .conflict ? "error.conflict" : "error.operation") }
+                } else if let batch = error as? S3MoveBatchFailure {
+                    self.presentError(key: "operation.partial", details: self.s3MoveDetails(for: batch.cause))
+                } else if let failure = error as? S3MoveFailure {
+                    self.presentError(key: self.s3MoveMessage(failure), details: failure.sourceKey + " → " + failure.destinationKey)
                 } else if let failure = error as? StorageTransferFailure {
                     if failure.reason == .cancelled { self.presentError(key: "cloud.cancel_notice") }
                     else if failure.completedCount > 0 { self.presentError(key: "operation.partial") }
@@ -431,7 +497,7 @@ final class FileCommands: NSObject, NSWindowDelegate {
             if let operationID, self.activeOperationID == operationID { self.dismissDecision() }
         } }
     }
-    private func resolveConflict(_ conflict: StorageConflict, restoring: Bool = false) async -> StorageConflictChoice {
+    func resolveConflict(_ conflict: StorageConflict, restoring: Bool = false) async -> StorageConflictChoice {
         guard !shuttingDown, !Task.isCancelled, let panel else { return .cancel }
         let operationID = activeOperationID
         return await withTaskCancellationHandler {
@@ -466,6 +532,21 @@ final class FileCommands: NSObject, NSWindowDelegate {
             alert.window.orderOut(nil)
         }
     }
+    private func s3MoveMessage(_ failure: S3MoveFailure) -> String {
+        switch failure.reason {
+        case .copyUnconfirmed: "s3.move.copy_unconfirmed"
+        case .sourceRetained: "s3.move.source_retained"
+        case .deleteUnconfirmed: "s3.move.delete_unconfirmed"
+        }
+    }
+    private func s3MoveDetails(for error: any Error) -> String? {
+        if let failure = error as? S3MoveFailure {
+            return L10n.text(s3MoveMessage(failure)) + "\n" + failure.sourceKey + " → " + failure.destinationKey
+        }
+        if let failure = error as? CloudFailure { return L10n.text("cloud.error.\(failure.reason.rawValue)") }
+        return nil
+    }
+
     private func recordInterruption(_ error: any Error, operation: String) {
         if let failure = error as? LocalTransferFailure {
             if failure.reason == .recoveryRequired || !failure.recoveryLocations.isEmpty {
@@ -477,6 +558,8 @@ final class FileCommands: NSObject, NSWindowDelegate {
                   !failure.completed.isEmpty || !failure.indeterminate.isEmpty {
             interruptionStore.append(code: .deletionPartial)
         } else if let failure = error as? SharedFileFailure, !failure.completed.isEmpty {
+            interruptionStore.append(code: .partialOperation)
+        } else if error is S3MoveFailure || error is S3MoveBatchFailure {
             interruptionStore.append(code: .partialOperation)
         } else if let failure = error as? StorageTransferFailure {
             if failure.completedCount > 0 { interruptionStore.append(code: .partialOperation) }

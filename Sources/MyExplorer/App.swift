@@ -76,11 +76,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let fixtureIndex = arguments.firstIndex(of: "--session-fixture-root")
         let fixtureRoot = smoke ? fixtureIndex.flatMap { arguments.indices.contains($0 + 1) ? URL(fileURLWithPath: arguments[$0 + 1], isDirectory: true) : nil } : nil
         let fallback = fixtureRoot ?? FileManager.default.homeDirectoryForCurrentUser
-        let connectionIDs = Set(CloudAccounts.shared.connections.map(\.id))
-        let plan = path == nil ? sessionPreferences.restorationPlan(fallback: fallback, availableConnectionIDs: connectionIDs) : nil
+        if !automationHost && !smoke { _ = CloudAccounts.shared.consolidateDuplicateS3Connections() }
+        let aliases = CloudAccounts.shared.connectionAliases
+        let connectionIDs = Set(CloudAccounts.shared.connections.map(\.id)).union(aliases.keys)
+        let plan = path == nil ? sessionPreferences.restorationPlan(fallback: fallback, availableConnectionIDs: connectionIDs)?.resolvingCloudAliases(aliases) : nil
         let initial = path.map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? plan.map { $0.tabs[$0.activeIndex].url }
-            ?? startupPreferences.initialURL(fallback: fallback, availableConnectionIDs: connectionIDs)
+            ?? RemoteLocation.resolvingAliases(in: startupPreferences.initialURL(fallback: fallback, availableConnectionIDs: connectionIDs), aliases: aliases)
         if !automationHost {
             let workspace = ExplorerWorkspace(reader: ApplicationDirectoryReader(), observerFactory: { DirectoryWatcher() })
             var fallbackTabs: Set<UUID> = []
@@ -286,6 +288,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         appMenu.addItem(withTitle: L10n.text("app.about"), action: #selector(showAbout), keyEquivalent: "").target = self
         appMenu.addItem(withTitle: L10n.text("options.title"), action: #selector(showOptions), keyEquivalent: ",").target = self
         appMenu.addItem(.separator())
+        let services = NSMenu(title: L10n.text("quick.services"))
+        appMenu.addItem(withTitle: services.title, action: nil, keyEquivalent: "").submenu = services
+        NSApp.registerServicesMenuSendTypes(ExplorerTableView.serviceTypes, returnTypes: [])
+        NSApp.servicesMenu = services
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: L10n.text("app.hide"), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(withTitle: L10n.text("app.quit"), action: #selector(requestQuit), keyEquivalent: "q").target = self
         let file = NSMenuItem(title: L10n.text("menu.file"), action: nil, keyEquivalent: ""); main.addItem(file)
@@ -322,6 +329,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let navMenu = NSMenu(title: L10n.text("menu.navigate")); navigation.submenu = navMenu
         let address = navMenu.addItem(withTitle: L10n.text("command.edit_address"), action: #selector(focusAddress), keyEquivalent: "l")
         address.target = self
+        let search = navMenu.addItem(withTitle: L10n.text("search.title"), action: #selector(showFileSearch), keyEquivalent: "f")
+        search.keyEquivalentModifierMask = [.command, .shift]
+        search.target = self
+        navMenu.addItem(withTitle: L10n.text("server.connect"), action: #selector(connectToServer), keyEquivalent: "k").target = self
         let reload = navMenu.addItem(withTitle: L10n.text("command.refresh"), action: #selector(refresh), keyEquivalent: "r")
         reload.target = self
         let languageItem = NSMenuItem(title: L10n.text("menu.language"), action: nil, keyEquivalent: "")
@@ -389,8 +400,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             settings.onConnected = { [weak self] url in
                 guard let self else { return }
                 if let controller = self.controller, controller.workspace.activeTab != nil {
-                    controller.addTab(at: url)
-                    controller.window?.makeKeyAndOrderFront(nil)
+                    controller.openConnectedBucket(url)
                 } else {
                     let controller = ExplorerWindowController(initialURL: url)
                     self.configureCallbacks(controller)
@@ -405,9 +415,105 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         cloudSettings?.window?.makeKeyAndOrderFront(nil)
     }
 
+    private func testS3CredentialImport(_ settings: CloudSettingsController) async throws {
+        guard let window = settings.window, let content = window.contentView else { throw SmokeFailure.failed("Missing settings window") }
+        let views = descendants(of: content)
+        func view<T: NSView>(_ key: String, as type: T.Type) throws -> T {
+            guard let value = views.first(where: { $0.accessibilityIdentifier() == key }) as? T else {
+                throw SmokeFailure.failed("Missing settings control " + key)
+            }
+            return value
+        }
+        let button = try view("cloud.import_csv", as: NSButton.self)
+        let provider = try view("cloud.provider", as: NSPopUpButton.self)
+        let id = try view("cloud.access_key", as: NSTextField.self)
+        let secret = try view("cloud.secret", as: NSSecureTextField.self)
+        let token = try view("cloud.session_token", as: NSSecureTextField.self)
+        let bucket = try view("cloud.bucket", as: NSTextField.self)
+        bucket.stringValue = "smoke-test-bucket"
+        token.stringValue = "obsolete"
+        button.performClick(nil)
+        try await waitForCondition("CSV picker") { window.attachedSheet is NSOpenPanel }
+        (window.attachedSheet as? NSOpenPanel)?.cancel(nil)
+        try await waitForCondition("CSV picker closed") { window.attachedSheet == nil }
+        guard token.stringValue == "obsolete" else { throw SmokeFailure.failed("Cancel changed the draft") }
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".csv")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data("Access key ID,Secret access key\nid-test,secret-test".utf8).write(to: file)
+        settings.fillS3Credentials(from: file)
+        try await waitForCondition("CSV imported") { button.isEnabled }
+        guard id.stringValue == "id-test", secret.stringValue == "secret-test", token.stringValue.isEmpty,
+              bucket.stringValue == "smoke-test-bucket" else { throw SmokeFailure.failed("Incorrect CSV draft") }
+        bucket.stringValue = "  "
+        let connect = try view("cloud.connect", as: NSButton.self)
+        connect.performClick(nil)
+        guard views.contains(where: { ($0 as? NSTextField)?.stringValue == L10n.text("cloud.bucket_needed") }),
+              bucket.currentEditor() != nil, button.isEnabled, secret.stringValue == "secret-test" else {
+            throw SmokeFailure.failed("Missing S3 bucket did not focus the field and preserve the draft")
+        }
+        try Data("invalid".utf8).write(to: file)
+        settings.fillS3Credentials(from: file)
+        try await waitForCondition("CSV rejected") { button.isEnabled }
+        guard id.stringValue == "id-test", secret.stringValue == "secret-test" else { throw SmokeFailure.failed("Invalid import changed the draft") }
+        provider.selectItem(at: 1)
+        if let action = provider.action { NSApp.sendAction(action, to: provider.target, from: provider) }
+        guard button.isHidden, secret.stringValue.isEmpty else { throw SmokeFailure.failed("Credentials survived provider change") }
+        provider.selectItem(at: 0)
+        if let action = provider.action { NSApp.sendAction(action, to: provider.target, from: provider) }
+        bucket.stringValue = ""
+    }
+
+    private func testS3BucketSelection() async throws {
+        let settings = CloudSettingsController { credentials, _ in
+            guard credentials.secretAccessKey == "smoke" else { throw CloudFailure(.permissionDenied) }
+            return .init(buckets: [.init(name: "test-one", region: "us-east-1"),
+                                   .init(name: "test-two", region: "sa-east-1")], isPartial: false)
+        }
+        settings.showWindow(nil)
+        defer { settings.close() }
+        guard let window = settings.window, let content = window.contentView else { throw SmokeFailure.failed("Missing form") }
+        let controls = descendants(of: content)
+        func field(_ name: String) -> NSTextField? {
+            controls.first { $0.accessibilityIdentifier() == "cloud." + name } as? NSTextField
+        }
+        guard let button = controls.first(where: { $0.accessibilityIdentifier() == "cloud.bucket_lookup" }) as? NSButton,
+              let id = field("access_key"), let key = field("secret"), let bucket = field("bucket"),
+              let region = field("region") else { throw SmokeFailure.failed("Missing bucket discovery controls") }
+        id.stringValue = "example"
+        key.stringValue = "smoke"
+        bucket.stringValue = "manual-example"
+        for response in [NSApplication.ModalResponse.alertSecondButtonReturn, .alertFirstButtonReturn] {
+            button.performClick(nil)
+            try await waitForCondition("bucket picker") { window.attachedSheet != nil }
+            guard let sheet = window.attachedSheet, let container = sheet.contentView,
+                  let picker = descendants(of: container).compactMap({ $0 as? NSPopUpButton }).first,
+                  picker.numberOfItems == 2 else { throw SmokeFailure.failed("Missing accessible buckets") }
+            picker.selectItem(at: 1)
+            window.endSheet(sheet, returnCode: response)
+            try await waitForCondition("bucket picker finished") { bucket.isEnabled }
+            if response == .alertSecondButtonReturn && bucket.stringValue != "manual-example" {
+                throw SmokeFailure.failed("Cancelling changed the manual bucket")
+            }
+        }
+        guard bucket.stringValue == "test-two", region.stringValue == "sa-east-1" else {
+            throw SmokeFailure.failed("Wrong selected bucket or region")
+        }
+        key.stringValue = "denied"
+        button.performClick(nil)
+        try await waitForCondition("manual bucket fallback") {
+            bucket.isEnabled && controls.contains { ($0 as? NSTextField)?.stringValue == L10n.text("cloud.bucket_denied") }
+        }
+        guard bucket.stringValue == "test-two", region.stringValue == "sa-east-1" else {
+            throw SmokeFailure.failed("Denied discovery changed the draft")
+        }
+    }
+
     private static let cloudSettingsKeys = ["cloud.manage", "cloud.new", "cloud.remove", "cloud.provider", "cloud.name",
         "cloud.bucket", "cloud.region", "cloud.account", "cloud.access_key", "cloud.secret", "cloud.session_token",
-        "cloud.sas", "cloud.access_token", "cloud.credentials_note", "cloud.connect", "cloud.testing"] +
+        "cloud.sas", "cloud.access_token", "cloud.credentials_note", "cloud.connect", "cloud.testing",
+        "cloud.import_csv", "cloud.import_csv_ok", "cloud.import_csv_error", "cloud.bucket_needed", "cloud.import_bucket_needed",
+        "cloud.bucket_lookup", "cloud.bucket_keys_needed", "cloud.bucket_searching", "cloud.bucket_partial",
+        "cloud.bucket_none", "cloud.bucket_choose", "cloud.bucket_denied"] +
         ["invalidConfiguration", "invalidKey", "authenticationRequired", "permissionDenied", "notFound", "conflict",
          "preconditionFailed", "rateLimited", "serviceUnavailable", "malformedResponse", "insecureTransport", "cancelled",
          "localConflict", "limitExceeded", "io"].map { "cloud.error." + $0 }
@@ -492,6 +598,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
     @objc private func togglePreview(_ sender: Any?) { controller?.togglePreviewPane(sender) }
 
+    @objc private func connectToServer(_ sender: Any?) { controller?.systemVolumes.promptForServer() }
+    @objc private func showFileSearch(_ sender: Any?) { controller?.showFileSearch(sender) }
     @objc private func focusAddress(_ sender: Any?) { controller?.focusAddress(sender) }
     @objc private func refresh(_ sender: Any?) { controller?.refresh(sender) }
     @objc private func newTab(_ sender: Any?) { controller?.newTab(sender) }
@@ -576,7 +684,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 }
                 if arguments.contains("--trash-undo-smoke") {
                     try await testTrashUndo(root: root, browser: controller)
-                    print("SMOKE PASS: system Trash restore, Ctrl+Z, Command+Z and name conflicts")
+                    print("SMOKE PASS: sidebar Trash, permanent-delete cancellation, Put Back, Ctrl+Z, Command+Z and name conflicts")
+                    NSApp.terminate(nil)
+                    return
+                }
+                if arguments.contains("--file-search-smoke") {
+                    try await FileSearchController.smoke(root: root)
+                    try QuickActionCommands.smoke(in: controller, root: root)
+                    print("SMOKE PASS: nested file search, Finder tags, live saved results, quick actions, iCloud menus and Services")
+                    NSApp.terminate(nil)
+                    return
+                }
+                if arguments.contains("--s3-drag-smoke") {
+                    try await testS3Drag(controller)
+                    print("SMOKE PASS: S3 drag, Delete and undo, context-menu cut and paste, Ctrl+X and Command+V")
+                    NSApp.terminate(nil)
+                    return
+                }
+                if arguments.contains("--s3-folder-smoke") {
+                    try await testS3FolderMenu(controller)
+                    print("SMOKE PASS: New Folder in S3 root and subfolder, local and cloud overview")
+                    NSApp.terminate(nil)
+                    return
+                }
+                if arguments.contains("--cloud-reconnect-smoke") {
+                    try await CloudConnectionIdentitySmoke.run()
+                    try await testCloudReconnect(controller)
+                    print("SMOKE PASS: cloud identity, migration, reconnect, focus and disconnect")
+                    NSApp.terminate(nil)
+                    return
+                }
+                if arguments.contains("--s3-csv-smoke") {
+                    showCloudSettings(nil)
+                    guard let settings = cloudSettings else { throw SmokeFailure.failed("Missing connection editor") }
+                    try await testS3CredentialImport(settings)
+                    settings.close()
+                    try await testS3BucketSelection()
+                    print("SMOKE PASS: S3 CSV import, bucket validation, selection, region and manual fallback")
                     NSApp.terminate(nil)
                     return
                 }
@@ -601,6 +745,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 if arguments.contains("--clipboard-smoke") {
                     try await testLocalClipboard(root: root)
                     print("SMOKE PASS: local clipboard copy, quarantine, conflicts and Undo")
+                    NSApp.terminate(nil)
+                    return
+                }
+                if arguments.contains("--eject-smoke") {
+                    try await testMobileDevicePanel(browser: controller)
+                    try await testDisposableEjection(root: root, browser: controller)
+                    print("SMOKE PASS: device panel, native ejection, affected and unaffected tabs")
                     NSApp.terminate(nil)
                     return
                 }
@@ -1615,6 +1766,183 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }.value
     }
 
+    private func testS3Drag(_ browser: ExplorerWindowController) async throws {
+        let transport = SmokeS3DragTransport()
+        let accounts = CloudAccounts.shared
+        accounts.clientFactory = { try CloudStorageClient(connection: $0, credentials: $1, transport: transport) }
+        let settings = CloudConnection(name: "S3 drag", provider: .s3, bucket: "smoke-bucket", region: "us-east-1")
+        let id = try await accounts.save(settings, credentials: .init(accessKeyID: "TEST", secretAccessKey: "fixture"))
+        let root = RemoteLocation.url(connectionID: id)
+        browser.navigate(.visit(root))
+        try await waitForListing(browser)
+        let folder = RemoteLocation.url(connectionID: id, key: "Sub Pasta/")
+        let file = RemoteLocation.url(connectionID: id, key: "clip.mov")
+        let rows = 0..<browser.numberOfRows(in: browser.table)
+        func displayName(_ row: Int) -> String? {
+            browser.tableView(browser.table, typeSelectStringFor: nil, row: row)
+        }
+        guard let source = rows.first(where: { displayName($0)?.hasPrefix("clip") == true }),
+              let target = rows.first(where: { displayName($0) == "Sub Pasta" }),
+              let writer = browser.tableView(browser.table, pasteboardWriterForRow: source) else {
+            throw SmokeFailure.failed("Missing S3 drag source or folder")
+        }
+        let board = NSPasteboard(name: .init("MyExplorer.S3DragSmoke.\(UUID())"))
+        defer { board.releaseGlobally() }
+        guard board.writeObjects([writer]) else { throw SmokeFailure.failed("Missing S3 pasteboard payload") }
+        let info = SmokeDraggingInfo(pasteboard: board, window: browser.window, source: browser.table)
+        let external = SmokeDraggingInfo(pasteboard: board, window: browser.window)
+        guard browser.tableView(browser.table, validateDrop: external, proposedRow: target, proposedDropOperation: .on).isEmpty else {
+            throw SmokeFailure.failed("External S3 move accepted")
+        }
+        guard browser.tableView(browser.table, validateDrop: info, proposedRow: source, proposedDropOperation: .on).isEmpty else {
+            throw SmokeFailure.failed("Same-directory S3 move accepted")
+        }
+        guard browser.tableView(browser.table, validateDrop: info, proposedRow: target, proposedDropOperation: .on) == .move else {
+            throw SmokeFailure.failed("Folder did not accept an internal S3 move")
+        }
+        guard browser.tableView(browser.table, acceptDrop: info, row: target, dropOperation: .on) else {
+            throw SmokeFailure.failed("S3 folder did not start move")
+        }
+        try await waitForCondition("source removed from bucket root") {
+            !FileCommands.shared.isBusy && browser.session.entries.contains { $0.url == folder } &&
+                !browser.session.entries.contains { $0.url == file }
+        }
+        browser.navigate(.visit(folder))
+        try await waitForListing(browser)
+        let destination = RemoteLocation.url(connectionID: id, key: "Sub Pasta/clip.mov")
+        guard browser.session.entries.contains(where: { $0.url == destination }), await transport.didMoveFile else {
+            throw SmokeFailure.failed("S3 destination missing or incorrect contents")
+        }
+        ExplorerStyle.browserPreferences.confirmDeletion = false
+        browser.window?.makeKeyAndOrderFront(nil)
+        browser.window?.makeFirstResponder(browser.table)
+        browser.table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        try sendKey("", code: 117, flags: [], to: browser)
+        try await waitForCondition("Delete removed S3 file and recorded undo") {
+            !FileCommands.shared.isBusy && FileCommands.shared.undoKind == .trash && browser.session.entries.isEmpty
+        }
+        browser.window?.makeKeyAndOrderFront(nil)
+        browser.window?.makeFirstResponder(browser.table)
+        try sendKey("z", code: 6, flags: .control, to: browser)
+        try await waitForCondition("Ctrl+Z restored S3 file") {
+            !FileCommands.shared.isBusy && browser.session.entries.contains { $0.url == destination }
+        }
+        guard await transport.didMoveFile, FileCommands.shared.undoKind == nil else {
+            throw SmokeFailure.failed("Ctrl+Z did not restore original contents")
+        }
+
+        let commands = FileCommands.shared
+        let previousBoard = commands.pasteboard
+        let clipboard = NSPasteboard(name: .init("MyExplorer.S3CutSmoke.\(UUID())"))
+        commands.pasteboard = clipboard
+        defer { commands.pasteboard = previousBoard; clipboard.releaseGlobally() }
+        guard let menu = browser.table.menu,
+              let selected = browser.session.entries.first(where: { $0.url == destination }) else {
+            throw SmokeFailure.failed("Missing S3 context menu or source")
+        }
+        func performMenu(_ key: String, for entries: [FileEntry]) throws {
+            browser.rebuildContextMenu(menu, entries: entries)
+            guard let item = menu.item(withTitle: L10n.text(key)), let action = item.action,
+                  browser.validateMenuItem(item), NSApp.sendAction(action, to: item.target, from: item) else {
+                throw SmokeFailure.failed("Disabled or unhandled S3 context action: \(key)")
+            }
+        }
+        try performMenu("command.cut_files", for: [selected])
+        try await waitForCondition("cut S3 file available to paste in bucket root") { commands.canPaste(into: root) }
+        guard !commands.canPaste(into: folder), !commands.canPaste(into: RemoteLocation.url(connectionID: UUID())),
+              await transport.didMoveFile else { throw SmokeFailure.failed("Invalid S3 cut destination or premature mutation") }
+        browser.navigate(.visit(root))
+        try await waitForListing(browser)
+        browser.window?.makeKeyAndOrderFront(nil)
+        browser.window?.makeFirstResponder(browser.table)
+        try sendKey("v", code: 9, flags: .command, to: browser)
+        try await waitForCondition("Command+V moved S3 file to bucket root") {
+            !commands.isBusy && commands.pasteURLs.isEmpty && browser.session.entries.contains { $0.url == file }
+        }
+        guard let fileRow = (0..<browser.table.numberOfRows).first(where: { displayName($0)?.hasPrefix("clip") == true }),
+              let folderEntry = browser.session.entries.first(where: { $0.url == folder }) else {
+            throw SmokeFailure.failed("Missing S3 file or destination folder")
+        }
+        browser.window?.makeKeyAndOrderFront(nil)
+        browser.window?.makeFirstResponder(browser.table)
+        browser.table.selectRowIndexes(IndexSet(integer: fileRow), byExtendingSelection: false)
+        try sendKey("x", code: 7, flags: .control, to: browser)
+        try await waitForCondition("Ctrl+X prepared S3 file") { commands.canPaste(into: folder) }
+        try performMenu("command.paste_files", for: [folderEntry])
+        try await waitForCondition("context paste moved S3 file into selected folder") {
+            !commands.isBusy && commands.pasteURLs.isEmpty && !browser.session.entries.contains { $0.url == file }
+        }
+        guard await transport.didMoveFile else { throw SmokeFailure.failed("Unexpected S3 contents after cut and paste") }
+    }
+
+    private func testS3FolderMenu(_ browser: ExplorerWindowController) async throws {
+        let accounts = CloudAccounts.shared
+        let transport = SmokeCloudListingTransport()
+        accounts.clientFactory = { try CloudStorageClient(connection: $0, credentials: $1, transport: transport) }
+        let connection = CloudConnection(name: "S3 fixture", provider: .s3, bucket: "smoke-bucket", region: "us-east-1")
+        let id = try await accounts.save(connection, credentials: .init(accessKeyID: "TEST", secretAccessKey: "fixture"))
+        let local = browser.session.history.current.url
+        let cases = [(RemoteLocation.url(connectionID: id), true), (RemoteLocation.url(connectionID: id, key: "folder/"), true),
+                     (URL(string: "myexplorer-cloud:///")!, false), (local, true)]
+        guard let menu = browser.table.menu, let window = browser.window else { throw SmokeFailure.failed("Missing table menu") }
+        for (url, enabled) in cases {
+            browser.navigate(.visit(url))
+            try await waitForListing(browser)
+            browser.rebuildContextMenu(menu, entries: [])
+            guard let item = menu.item(withTitle: L10n.text("command.new_folder")), let action = item.action,
+                  browser.validateMenuItem(item) == enabled else { throw SmokeFailure.failed("Incorrect New Folder availability") }
+            if enabled {
+                NSApp.sendAction(action, to: item.target, from: item)
+                try await waitForCondition("folder name prompt") { window.attachedSheet != nil }
+                if let location = RemoteLocation.parse(url) {
+                    guard let sheet = window.attachedSheet, let content = sheet.contentView,
+                          let name = descendants(of: content).compactMap({ $0 as? NSTextField }).first(where: { $0.isEditable })
+                    else { throw SmokeFailure.failed("Missing folder name field") }
+                    name.stringValue = "NewFolderSmoke"
+                    window.endSheet(sheet, returnCode: .alertFirstButtonReturn)
+                    let expected = RemoteLocation.url(connectionID: id, key: location.key + "NewFolderSmoke/")
+                    try await waitForCondition("new S3 folder in listing") {
+                        browser.session.entries.contains { $0.isDirectory && $0.url == expected }
+                    }
+                } else {
+                    window.endSheet(window.attachedSheet!, returnCode: .alertSecondButtonReturn)
+                    try await waitForCondition("cancel folder creation") { window.attachedSheet == nil }
+                }
+            }
+        }
+    }
+
+    private func testCloudReconnect(_ browser: ExplorerWindowController) async throws {
+        let accounts = CloudAccounts.shared
+        let backend = SmokeCloudListingTransport()
+        accounts.clientFactory = { try CloudStorageClient(connection: $0, credentials: $1, transport: backend) }
+        let settings = CloudConnection(name: "S3 smoke", provider: .s3, bucket: "smoke-bucket", region: "us-east-1")
+        let creds = CloudCredentials(accessKeyID: "SMOKE", secretAccessKey: "MOCK")
+        let id = try await accounts.save(settings, credentials: creds, reuseExistingS3: true)
+        let root = RemoteLocation.url(connectionID: id)
+        let localTab = browser.workspace.activeID!
+        let cloudTab = browser.addTab(at: RemoteLocation.url(connectionID: id, key: "folder/"))
+        browser.selectTab(id: localTab)
+        browser.openConnectedBucket(root)
+        guard browser.workspace.activeID == cloudTab.id, browser.workspace.tabs.count == 2,
+              browser.session.history.current.url == RemoteLocation.url(connectionID: id, key: "folder/") else {
+            throw SmokeFailure.failed("Reconnecting lost the open folder or created another tab")
+        }
+        let outline = browser.tree.outline
+        guard let row = (0..<outline.numberOfRows).first(where: { (outline.item(atRow: $0) as? FolderNode)?.url == root }),
+              let menu = outline.contextMenuForRow?(row), let item = menu.item(withTitle: L10n.text("volume.disconnect")),
+              let action = item.action, let window = browser.window else { throw SmokeFailure.failed("Missing disconnect action") }
+        for response in [NSApplication.ModalResponse.alertFirstButtonReturn, .alertSecondButtonReturn] {
+            NSApp.sendAction(action, to: item.target, from: item)
+            try await waitForCondition("disconnect sheet") { window.attachedSheet != nil }
+            window.endSheet(window.attachedSheet!, returnCode: response)
+            try await waitForCondition("disconnect sheet dismissed") { window.attachedSheet == nil }
+            if response == .alertFirstButtonReturn && accounts.connections.isEmpty { throw SmokeFailure.failed("Cancel removed connection") }
+        }
+        try await waitForCondition("disconnect finished") { accounts.connections.isEmpty && browser.workspace.tabs.count == 1 }
+        guard browser.workspace.activeID == localTab else { throw SmokeFailure.failed("Disconnect affected local tab") }
+    }
+
     private func testCloudConnections(root: URL) async throws {
         guard let defaultsName = smokeDefaultsName, let defaults = UserDefaults(suiteName: defaultsName),
               let original = controller, let localID = original.workspace.activeID,
@@ -1680,6 +2008,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
               let name = descendants(of: content).first(where: { $0.accessibilityIdentifier() == "cloud.name" }) as? NSTextField else {
             throw SmokeFailure.failed("Cloud connection form did not open")
         }
+        try await testS3CredentialImport(settings)
         secret.stringValue = "draft-smoke-secret"
         name.stringValue = "Draft connection"
         changeLanguage(.german)
@@ -1781,6 +2110,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
               try Data(contentsOf: destination.appendingPathComponent(source.lastPathComponent)) == payload else {
             throw SmokeFailure.failed("Cloud deletion failed or changed downloaded local copy")
         }
+    }
+
+    private func testMobileDevicePanel(browser: ExplorerWindowController) async throws {
+        let tree = browser.tree.outline
+        guard let row = (0..<tree.numberOfRows).first(where: {
+            (tree.item(atRow: $0) as? FolderNode)?.url.scheme == "myexplorer-devices"
+        }) else { throw SmokeFailure.failed("Missing mobile devices in navigation") }
+        for _ in 0..<2 {
+            tree.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            try await waitForCondition("mobile device panel") {
+                NSApp.windows.contains { $0.title == L10n.text("devices.title") && $0.isVisible }
+            }
+            NSApp.windows.first { $0.title == L10n.text("devices.title") && $0.isVisible }?.close()
+        }
+    }
+
+    private func testDisposableEjection(root: URL, browser: ExplorerWindowController) async throws {
+        let token = try String(contentsOf: root.appendingPathComponent("eject-fixture"), encoding: .utf8)
+        guard UUID(uuidString: token) != nil else { throw SmokeFailure.failed("Invalid ejection fixture") }
+        let volume = URL(fileURLWithPath: "/Volumes/MyExplorer-" + token, isDirectory: true)
+        guard try String(contentsOf: volume.appendingPathComponent("eject-fixture"), encoding: .utf8) == token,
+              let original = browser.workspace.activeTab else { throw SmokeFailure.failed("Invalid disposable volume") }
+        let tab = browser.addTab(at: volume)
+        try await waitForListing(browser)
+        let tree = browser.tree
+        let node = (0..<tree.outline.numberOfRows).compactMap { tree.outline.item(atRow: $0) as? FolderNode }.first { $0.url.path == "/Volumes" }
+        guard let node else { throw SmokeFailure.failed("Missing Volumes") }
+        tree.outline.expandItem(node)
+        try await waitForCondition("disposable disk in tree") { node.children?.contains { $0.url.path == volume.path } == true }
+        guard let disk = node.children?.first(where: { $0.url.path == volume.path }), disk.volume?.removal == .eject,
+              let menu = tree.outline.contextMenuForRow?(tree.outline.row(forItem: disk)),
+              let eject = menu.item(withTitle: L10n.text("volume.eject")), let action = eject.action else {
+            throw SmokeFailure.failed("No Eject command")
+        }
+        NSApp.sendAction(action, to: eject.target, from: eject)
+        try await waitForCondition("volume removed", timeout: .seconds(30)) {
+            !FileManager.default.fileExists(atPath: volume.path) && tab.session.history.current.url.path == "/Volumes"
+        }
+        guard original.session.history.current.url.explorerIdentity == root.explorerIdentity,
+              browser.systemVolumes.notice(for: tab.id) != nil else { throw SmokeFailure.failed("Ejection did not isolate volume tabs") }
+        if let sheet = browser.window?.attachedSheet { browser.window?.endSheet(sheet) }
     }
 
     private func testVolumeNavigation(root: URL) async throws {
@@ -3125,6 +3495,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         guard try Data(contentsOf: restored) == original, try Data(contentsOf: file) == other, commands.undoKind == nil else {
             throw SmokeFailure.failed("Keep Both did not preserve both files")
         }
+
+        // Exercise the sidebar and its independent permanent-delete confirmation using only this fixture.
+        try await remove()
+        let tree = browser.tree.outline
+        guard let trashRow = (0..<tree.numberOfRows).first(where: {
+            (tree.item(atRow: $0) as? FolderNode)?.url.scheme == "myexplorer-trash"
+        }) else { throw SmokeFailure.failed("Missing Trash in sidebar") }
+        tree.selectRowIndexes(IndexSet(integer: trashRow), byExtendingSelection: false)
+        guard let trashWindow = NSApp.windows.first(where: { $0.isVisible && $0.title == L10n.text("trash.title") }) else {
+            throw SmokeFailure.failed("Missing Trash window")
+        }
+        guard let content = trashWindow.contentView else { throw SmokeFailure.failed("Missing Trash content") }
+        let controls = descendants(of: content)
+        let buttons = controls.compactMap { $0 as? NSButton }
+        guard let table = controls.compactMap({ $0 as? NSTableView }).first,
+              let erase = buttons.first(where: { $0.title == L10n.text("trash.erase") }),
+              let restore = buttons.first(where: { $0.title == L10n.text("trash.restore") }) else {
+            throw SmokeFailure.failed("Missing Trash controls")
+        }
+        func fixtureRow() -> Int? {
+            (0..<table.numberOfRows).first {
+                (table.view(atColumn: 0, row: $0, makeIfNecessary: true) as? NSTextField)?.stringValue == file.lastPathComponent
+            }
+        }
+        try await waitForCondition("Trash displays the deleted fixture") { fixtureRow() != nil }
+        guard let row = fixtureRow() else { throw SmokeFailure.failed("Deleted fixture disappeared") }
+        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        guard erase.isEnabled, restore.isEnabled else { throw SmokeFailure.failed("Missing Trash actions for known origin") }
+        erase.performClick(nil)
+        guard let sheet = trashWindow.attachedSheet, let sheetContent = sheet.contentView,
+              let cancel = descendants(of: sheetContent).compactMap({ $0 as? NSButton }).first(where: { $0.title == L10n.text("dialog.cancel") }) else {
+            throw SmokeFailure.failed("Permanent deletion did not ask for confirmation")
+        }
+        cancel.performClick(nil)
+        try await waitForCondition("permanent deletion cancelled") { trashWindow.attachedSheet == nil && restore.isEnabled }
+        restore.performClick(nil)
+        try await waitForCondition("Trash restored fixture") { !commands.isBusy && FileManager.default.fileExists(atPath: file.path) }
+        guard try Data(contentsOf: file) == other, commands.undoKind == nil else { throw SmokeFailure.failed("Unexpected restored item or undo history") }
+        trashWindow.close()
     }
 
     private func testAddressCompletion(root: URL, browser: ExplorerWindowController) async throws {
@@ -3626,6 +4035,14 @@ private actor SmokeCloudListingTransport: CloudTransport {
         try Task.checkCancellation()
         guard let url = request.url,
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { throw CloudFailure(.io) }
+        if request.httpMethod == "PUT", url.host?.hasSuffix(".amazonaws.com") == true,
+           request.value(forHTTPHeaderField: "If-None-Match") == "*" {
+            let key = String(components.path.dropFirst())
+            guard key == "NewFolderSmoke/" || key == "folder/NewFolderSmoke/" else { throw CloudFailure(.invalidKey) }
+            guard uploaded[key] == nil else { return CloudResponse(statusCode: 412) }
+            uploaded[key] = Data()
+            return CloudResponse(statusCode: 200, headers: ["ETag": "\"smoke-marker\""])
+        }
         if request.httpMethod == "HEAD", url.host?.hasSuffix(".amazonaws.com") == true {
             let key = String(url.path.dropFirst())
             guard let data = uploaded[key] else { return CloudResponse(statusCode: 404) }
@@ -3643,7 +4060,10 @@ private actor SmokeCloudListingTransport: CloudTransport {
         let key = prefix + "same.txt"
         let body: Data
         if url.host?.hasSuffix(".amazonaws.com") == true {
-            let folder = prefix.isEmpty ? "<CommonPrefixes><Prefix>folder/</Prefix></CommonPrefixes>" : ""
+            var folder = prefix.isEmpty ? "<CommonPrefixes><Prefix>folder/</Prefix></CommonPrefixes>" : ""
+            if uploaded[prefix + "NewFolderSmoke/"] != nil {
+                folder += "<CommonPrefixes><Prefix>" + prefix + "NewFolderSmoke/</Prefix></CommonPrefixes>"
+            }
             body = Data(("<ListBucketResult><IsTruncated>false</IsTruncated>" + folder +
                 "<Contents><Key>\(key)</Key><Size>7</Size><ETag>\"smoke\"</ETag></Contents></ListBucketResult>").utf8)
         } else if url.host?.hasSuffix(".blob.core.windows.net") == true {

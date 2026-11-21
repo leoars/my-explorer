@@ -22,10 +22,11 @@ private final class WatchPreparation: @unchecked Sendable {
 
 private final class WatchCallback: @unchecked Sendable {
     let path: String
+    let includeDescendants: Bool
     let notify: @Sendable (Bool) -> Void
     private let lifecycle: (@Sendable (Bool) -> Void)?
-    init(path: String, notify: @escaping @Sendable (Bool) -> Void, lifecycle: (@Sendable (Bool) -> Void)?) {
-        self.path = path; self.notify = notify; self.lifecycle = lifecycle; lifecycle?(true)
+    init(path: String, includeDescendants: Bool, notify: @escaping @Sendable (Bool) -> Void, lifecycle: (@Sendable (Bool) -> Void)?) {
+        self.path = path; self.includeDescendants = includeDescendants; self.notify = notify; self.lifecycle = lifecycle; lifecycle?(true)
     }
     deinit { lifecycle?(false) }
 }
@@ -97,13 +98,16 @@ public final class DirectoryWatcher: DirectoryChangeObserving {
     private let openedDescriptor: (@Sendable (Int32) -> Void)?
     private let forceStreamCreationFailure: Bool
     private let contextLifecycle: (@Sendable (Bool) -> Void)?
-    public init() {
+    private let includeDescendants: Bool
+    public init(includeDescendants: Bool = false) {
+        self.includeDescendants = includeDescendants
         beforePreparation = nil; openedDescriptor = nil; forceStreamCreationFailure = false; contextLifecycle = nil
     }
     internal init(beforePreparation: (@Sendable (URL) -> Void)? = nil,
                   openedDescriptor: (@Sendable (Int32) -> Void)? = nil,
                   forceStreamCreationFailure: Bool = false,
                   contextLifecycle: (@Sendable (Bool) -> Void)? = nil) {
+        self.includeDescendants = false
         self.beforePreparation = beforePreparation; self.openedDescriptor = openedDescriptor
         self.forceStreamCreationFailure = forceStreamCreationFailure; self.contextLifecycle = contextLifecycle
     }
@@ -130,7 +134,7 @@ public final class DirectoryWatcher: DirectoryChangeObserving {
         preparation?.cancel(); resources?.cancel(); resources = nil
         let token = WatchPreparation()
         preparation = token
-        let before = beforePreparation, opened = openedDescriptor
+        let before = beforePreparation, opened = openedDescriptor, recursive = includeDescendants
         let failCreation = forceStreamCreationFailure, lifecycle = contextLifecycle
         let callback: @Sendable (Bool) -> Void = { [weak self] rearm in
             guard token.acceptsEvents else { return }
@@ -144,7 +148,7 @@ public final class DirectoryWatcher: DirectoryChangeObserving {
             guard !token.isCancelled else { return }
             before?(url)
             let prepared = Self.prepare(url, token: token, callback: callback, opened: opened,
-                                        forceStreamCreationFailure: failCreation, contextLifecycle: lifecycle)
+                                        forceStreamCreationFailure: failCreation, contextLifecycle: lifecycle, includeDescendants: recursive)
             Task { @MainActor [weak self] in
                 guard let self, self.generation == expected, !token.isCancelled else { prepared?.cancel(); return }
                 self.resources = prepared
@@ -166,7 +170,7 @@ public final class DirectoryWatcher: DirectoryChangeObserving {
 
     nonisolated private static func prepare(_ url: URL, token: WatchPreparation,
         callback: @escaping @Sendable (Bool) -> Void, opened: (@Sendable (Int32) -> Void)?,
-        forceStreamCreationFailure: Bool, contextLifecycle: (@Sendable (Bool) -> Void)?) -> WatchResources? {
+        forceStreamCreationFailure: Bool, contextLifecycle: (@Sendable (Bool) -> Void)?, includeDescendants: Bool) -> WatchResources? {
         guard !token.isCancelled else { return nil }
         let path = url.resolvingSymlinksInPath().standardizedFileURL.path
         guard !token.isCancelled else { return nil }
@@ -195,7 +199,7 @@ public final class DirectoryWatcher: DirectoryChangeObserving {
             next.resume()
             source = next
         }
-        let box = WatchCallback(path: path, notify: callback, lifecycle: contextLifecycle)
+        let box = WatchCallback(path: path, includeDescendants: includeDescendants, notify: callback, lifecycle: contextLifecycle)
         // FSEventStreamCreate can retain then release the context while failing and returning nil.
         // Give each framework retain its matching release; ownership never transfers implicitly.
         var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(box).toOpaque(),
@@ -217,6 +221,7 @@ public final class DirectoryWatcher: DirectoryChangeObserving {
             let relevant = (0..<min(count, paths.count)).contains { index in
                 let path = URL(fileURLWithPath: paths[index]).standardizedFileURL.path
                 return eventFlags[index] & rescan != 0 || path == callback.path ||
+                    (callback.includeDescendants && path.hasPrefix(callback.path == "/" ? "/" : callback.path + "/")) ||
                     URL(fileURLWithPath: path).deletingLastPathComponent().path == callback.path
             }
             if relevant { callback.notify(false) }

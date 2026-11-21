@@ -2,7 +2,7 @@
 import Foundation
 import Darwin
 
-private struct TrashIdentity: Equatable, Sendable {
+struct TrashIdentity: Hashable, Codable, Sendable {
     let device: dev_t
     let inode: ino_t
     let type: mode_t
@@ -18,10 +18,10 @@ private struct TrashIdentity: Equatable, Sendable {
     }
 }
 
-struct TrashRestoreOrigin: Sendable {
+struct TrashRestoreOrigin: Codable, Sendable {
     let url: URL
-    fileprivate let parent: TrashIdentity
-    fileprivate let item: TrashIdentity
+    let parent: TrashIdentity
+    let item: TrashIdentity
     var isDirectory: Bool { item.type == S_IFDIR }
 
     init(_ url: URL) throws {
@@ -34,7 +34,7 @@ struct TrashRestoreOrigin: Sendable {
     }
 }
 
-struct TrashedItem: Sendable {
+struct TrashedItem: Codable, Sendable {
     let origin: TrashRestoreOrigin
     let location: URL
 

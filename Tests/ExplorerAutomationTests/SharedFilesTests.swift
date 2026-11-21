@@ -41,6 +41,30 @@ final class SharedFilesTests: XCTestCase, @unchecked Sendable {
         let result = try await gate.run { 42 }
         XCTAssertEqual(result, 42)
     }
+    func testS3MoveValidatesWholeSelectionBeforeConnecting() async throws {
+        let id = UUID()
+        func object(_ key: String) -> URL { RemoteLocation.url(connectionID: id, key: key) }
+        let target = object("Sub Pasta/")
+        let service = SharedFileOperations { _ in
+            XCTFail("Invalid drag reached the cloud client")
+            throw CloudFailure(.io)
+        }
+        let first = object("clip.mov")
+        for (source, reason): (URL, CloudFailure.Reason) in [
+            (object("another/clip.mov"), .conflict),
+            (object("Sub Pasta/existing.mov"), .conflict),
+            (object("folder/"), .invalidKey),
+            (RemoteLocation.url(connectionID: UUID(), key: "other.mov"), .invalidConfiguration)
+        ] {
+            let selection = [first, source]
+            XCTAssertFalse(SharedFileOperations.canMoveS3Files(selection, to: target))
+            do {
+                _ = try await service.moveS3Files(selection, to: target)
+                XCTFail("Invalid batch succeeded")
+            } catch let error as CloudFailure { XCTAssertEqual(error.reason, reason) }
+        }
+        XCTAssertTrue(SharedFileOperations.canMoveS3Files([object("é.mov"), object("e\u{301}.mov")], to: target))
+    }
     private func fixture() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("MyExplorer.SharedFiles.\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

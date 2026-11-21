@@ -5,6 +5,23 @@ import Testing
 
 @MainActor
 struct SessionPreferencesTests {
+    @Test func restoredCloudAliasesKeepSubfoldersAndSelectCanonicalTab() {
+        let kept = UUID(), removed = UUID(), other = UUID()
+        let saved = SessionRestorePlan(tabs: [
+            .init(url: RemoteLocation.url(connectionID: kept)),
+            .init(url: RemoteLocation.url(connectionID: other)),
+            .init(url: RemoteLocation.url(connectionID: removed), sortKey: .kind, showHidden: true),
+            .init(url: RemoteLocation.url(connectionID: removed, key: "photos/"))
+        ], activeIndex: 2, fallbackReasons: [:])
+        let restored = saved.resolvingCloudAliases([removed: kept])
+        #expect(restored.tabs.map(\.url) == [
+            RemoteLocation.url(connectionID: kept), RemoteLocation.url(connectionID: other),
+            RemoteLocation.url(connectionID: kept, key: "photos/")
+        ])
+        #expect(restored.activeIndex == 0)
+        #expect(restored.tabs[0].sortKey == .kind && restored.tabs[0].showHidden)
+    }
+
     private func isolated(_ body: (UserDefaults) throws -> Void) rethrows {
         let name = "MyExplorer.SessionTests.\(UUID())"
         let suite = UserDefaults(suiteName: name)!

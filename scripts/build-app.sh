@@ -96,6 +96,11 @@ if [[ "${#requested_architectures[@]}" -gt 0 ]]; then
 fi
 codesign --force --sign "$signing_identity" --identifier "$bundle_identifier.cli" --timestamp=none "$staged_app/Contents/MacOS/myexplorer-cli"
 cp Resources/Info.plist "$staged_app/Contents/Info.plist"
+for strings in Resources/*.lproj/InfoPlist.strings; do
+  locale_dir="$(basename "$(dirname "$strings")")"
+  mkdir -p "$staged_app/Contents/Resources/$locale_dir"
+  cp "$strings" "$staged_app/Contents/Resources/$locale_dir/"
+done
 cp LICENSE "$staged_app/Contents/Resources/LICENSE"
 cp THIRD_PARTY_NOTICES.md "$staged_app/Contents/Resources/THIRD_PARTY_NOTICES.md"
 cp Resources/AppIcon.icns "$staged_app/Contents/Resources/AppIcon.icns"

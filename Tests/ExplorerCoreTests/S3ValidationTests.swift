@@ -11,6 +11,67 @@ final class S3ValidationTests: XCTestCase, @unchecked Sendable {
                                credentials: .init(accessKeyID: "PRIVATEACCESS", secretAccessKey: "SECRET-CREDENTIAL"),
                                transport: transport)
     }
+    func testS3DeleteAndUndoPreservesReplacementAndRestoresOriginalBytes() async throws {
+        let transport = S3ValidationTransport()
+        let client = try client(transport)
+        let key = "outside/preexisting.txt"
+        let original = RemoteLocation.url(connectionID: client.connection.id, key: key)
+        let service = StorageDeletionService(clientFactory: { _ in client })
+        let history = LocalTransferService()
+        let plan = try await service.plan(sources: [original], recursive: false)
+        let result = try await service.execute(planID: plan.id, undoHistory: history) { _ in true }
+        XCTAssertEqual(result.completed, [original])
+        let afterDelete = await transport.objects
+        XCTAssertNil(afterDelete[key])
+        let requests = await transport.records.filter { ["GET", "DELETE"].contains($0.method) }
+        XCTAssertEqual(requests.map(\.method), ["GET", "DELETE"])
+        XCTAssertEqual(requests.map(\.condition), ["\"outside\"", "\"outside\""])
+
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let replacement = Data("replacement".utf8)
+        try replacement.write(to: file)
+        _ = try await client.upload(fileURL: file, key: key)
+        do {
+            _ = try await history.undo(resolveTrashConflict: { _ in .cancel })
+            XCTFail("Cancel must keep the recovery record and both objects")
+        } catch { }
+        let afterCancel = await transport.objects
+        XCTAssertEqual(afterCancel[key]?.data, replacement)
+        XCTAssertEqual(afterCancel.count, 1)
+        let restored = try await history.undo(resolveTrashConflict: { _ in .keepBoth })
+        let contents = await transport.objects
+        XCTAssertEqual(contents[key]?.data, replacement)
+        let copy = try XCTUnwrap(contents.first { $0.key != key })
+        XCTAssertTrue(copy.key.hasPrefix("outside/"))
+        XCTAssertEqual(copy.value.data, Data("untouched".utf8))
+        XCTAssertTrue(restored.contains(RemoteLocation.url(connectionID: client.connection.id, key: copy.key)))
+        let lastPut = await transport.records.last { $0.method == "PUT" }
+        XCTAssertEqual(lastPut?.condition, "*")
+        let kind = await history.undoKind
+        XCTAssertNil(kind)
+    }
+
+    func testFailedS3UndoBackupLeavesOriginalAndDoesNotDelete() async throws {
+        let transport = S3ValidationTransport(mode: .downloadFailure)
+        let client = try client(transport)
+        let original = RemoteLocation.url(connectionID: client.connection.id, key: "outside/preexisting.txt")
+        let service = StorageDeletionService(clientFactory: { _ in client })
+        let history = LocalTransferService()
+        let plan = try await service.plan(sources: [original], recursive: false)
+        do {
+            _ = try await service.execute(planID: plan.id, undoHistory: history) { _ in true }
+            XCTFail("An unbacked object must remain intact")
+        } catch { }
+        let requests = await transport.records
+        XCTAssertTrue(requests.contains { $0.method == "GET" })
+        XCTAssertFalse(requests.contains { $0.method == "DELETE" })
+        let originalData = await transport.objects["outside/preexisting.txt"]?.data
+        XCTAssertEqual(originalData, Data("untouched".utf8))
+        let kind = await history.undoKind
+        XCTAssertNil(kind)
+    }
+
     func testBaselineRoundTripsPaginationAndSharedFolderDownload() async throws {
         let transport = S3ValidationTransport()
         let runner = S3ValidationRunner(client: try client(transport))

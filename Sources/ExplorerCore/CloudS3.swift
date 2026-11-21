@@ -49,7 +49,8 @@ internal enum S3SignatureV4 {
         request.setValue(nil, forHTTPHeaderField: "Authorization")
         var headers: [String: String] = [:]
         for (name, value) in request.allHTTPHeaderFields ?? [:] {
-            guard validHeaderValue(value) else { throw CloudFailure(.invalidConfiguration) }
+            let emptyMetadataField = value.isEmpty && name.lowercased().hasPrefix("x-amz-meta-")
+            guard emptyMetadataField || validHeaderValue(value) else { throw CloudFailure(.invalidConfiguration) }
             headers[name.lowercased()] = value.split(whereSeparator: { $0 == " " || $0 == "\t" }).joined(separator: " ")
         }
         let names = headers.keys.sorted()
@@ -81,6 +82,41 @@ internal enum S3SignatureV4 {
     }
 }
 
+public struct S3ObjectMetadata: Codable, Equatable, Sendable {
+    public let contentType: String?
+    public let userMetadata: [String: String]
+
+    init(response: CloudResponse) throws {
+        guard response.header("x-amz-missing-meta").map({ Int($0) == 0 }) ?? true else {
+            throw CloudFailure(.malformedResponse)
+        }
+        contentType = response.header("Content-Type")
+        var fields: [String: String] = [:]
+        for (header, value) in response.headers {
+            let name = header.lowercased()
+            if name.hasPrefix("x-amz-meta-") { fields[String(name.dropFirst(11))] = value }
+        }
+        userMetadata = fields
+        _ = try uploadHeaders()
+    }
+
+    func uploadHeaders() throws -> [String: String] {
+        var headers: [String: String] = [:]
+        if let contentType {
+            guard S3SignatureV4.validHeaderValue(contentType) else { throw CloudFailure(.malformedResponse) }
+            headers["Content-Type"] = contentType
+        }
+        for (name, value) in userMetadata {
+            // RFC 9110 HTTP field names are tokens; metadata must never introduce unrelated headers.
+            guard !name.isEmpty, name.utf8.allSatisfy({ byte in
+                (97...122).contains(byte) || (48...57).contains(byte) || "!#$%&'*+-.^_`|~".utf8.contains(byte)
+            }), value.isEmpty || S3SignatureV4.validHeaderValue(value) else { throw CloudFailure(.malformedResponse) }
+            headers["x-amz-meta-" + name] = value
+        }
+        return headers
+    }
+}
+
 internal struct S3CloudBackend: CloudProviderBackend {
     let connection: CloudConnection
     let credentials: CloudCredentials
@@ -95,14 +131,8 @@ internal struct S3CloudBackend: CloudProviderBackend {
             !bucket.contains("..") && !bucket.contains(".-") && !bucket.contains("-.") &&
             bucket.range(of: "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$", options: .regularExpression) == nil &&
             !bucket.hasSuffix("--x-s3")
-        guard validBucket,
-              region.range(of: "^[a-z]{2}(-[a-z]+)+-[0-9]+$", options: .regularExpression) != nil,
-              let access = credentials.accessKeyID, !access.isEmpty,
-              access.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) }),
-              let secret = credentials.secretAccessKey, S3SignatureV4.validHeaderValue(secret),
-              credentials.sessionToken.map(S3SignatureV4.validHeaderValue) ?? true else {
-            throw CloudFailure(.invalidConfiguration)
-        }
+        guard validBucket else { throw CloudFailure(.invalidConfiguration) }
+        try Self.validate(credentials, region: region)
         self.connection = connection; self.credentials = credentials; self.region = region; self.now = now
         let suffix = region.hasPrefix("cn-") ? "amazonaws.com.cn" : "amazonaws.com"
         // Dotted bucket names do not match S3's wildcard TLS certificate in virtual-hosted style.
@@ -112,6 +142,17 @@ internal struct S3CloudBackend: CloudProviderBackend {
         } else {
             host = "\(bucket).s3.\(region).\(suffix)"
             bucketPath = ""
+        }
+    }
+
+    static func validate(_ credentials: CloudCredentials, region: String) throws {
+        guard region.utf8.count <= 64,
+              region.range(of: #"\A[a-z]{2}(-[a-z]+)+-[0-9]+\z"#, options: .regularExpression) != nil,
+              let access = credentials.accessKeyID, !access.isEmpty,
+              access.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) }),
+              let secret = credentials.secretAccessKey, S3SignatureV4.validHeaderValue(secret),
+              credentials.sessionToken.map(S3SignatureV4.validHeaderValue) ?? true else {
+            throw CloudFailure(.invalidConfiguration)
         }
     }
 
@@ -173,6 +214,11 @@ internal struct S3CloudBackend: CloudProviderBackend {
                            isDirectory: key.hasSuffix("/"), version: response.header("ETag"))
     }
     func uploadRequest(key: String, condition: CloudWriteCondition, integrity: CloudUploadIntegrity? = nil) throws -> URLRequest {
+        try uploadRequest(key: key, condition: condition, integrity: integrity, metadata: nil)
+    }
+
+    func uploadRequest(key: String, condition: CloudWriteCondition, integrity: CloudUploadIntegrity?,
+                       metadata: S3ObjectMetadata?) throws -> URLRequest {
         var headers: [String: String]
         switch condition {
         case .absent: headers = ["If-None-Match": "*"]
@@ -180,6 +226,7 @@ internal struct S3CloudBackend: CloudProviderBackend {
             try Self.validateETag(version)
             headers = ["If-Match": version]
         }
+        for (name, value) in try metadata?.uploadHeaders() ?? [:] { headers[name] = value }
         if let integrity {
             headers["Content-Length"] = String(integrity.size)
             headers["x-amz-checksum-sha256"] = integrity.sha256Base64
@@ -194,6 +241,30 @@ internal struct S3CloudBackend: CloudProviderBackend {
     func deleteRequest(key: String, matchingVersion version: String) throws -> URLRequest {
         try Self.validateETag(version)
         return try request(method: "DELETE", key: key, headers: ["If-Match": version])
+    }
+
+    func copyRequest(source: String, matchingVersion: String, destination: String) throws -> URLRequest {
+        try Self.validateETag(matchingVersion)
+        let encodedSource = S3SignatureV4.encode(source, preservingSlashes: true)
+        return try request(method: "PUT", key: destination, headers: [
+            "x-amz-copy-source": "/" + connection.bucket + "/" + encodedSource,
+            "x-amz-copy-source-if-match": matchingVersion,
+            "If-None-Match": "*"
+        ])
+    }
+
+    // CopyObject can return HTTP 200 with an error in the XML body.
+    func copiedETag(_ response: CloudResponse) throws -> String {
+        guard response.statusCode == 200, response.body.count <= 64 * 1024,
+              let xml = String(data: response.body, encoding: .utf8),
+              !xml.contains("<!DOCTYPE"), !xml.contains("<!ENTITY"),
+              let root = try XMLDocument(xmlString: xml, options: [.nodeLoadExternalEntitiesNever]).rootElement(),
+              root.localName == "CopyObjectResult" else { throw CloudFailure(.malformedResponse) }
+        let tags = root.elements(forName: "ETag")
+        guard tags.count == 1, let tag = tags.first?.stringValue,
+              tag.utf8.count > 2, tag.first == "\"", tag.last == "\"" else { throw CloudFailure(.malformedResponse) }
+        try Self.validateETag(tag)
+        return tag
     }
 
     func downloadRequest(key: String, matchingVersion: String? = nil) throws -> URLRequest {

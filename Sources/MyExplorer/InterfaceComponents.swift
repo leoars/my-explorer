@@ -122,7 +122,32 @@ final class FileNameCell: NSTableCellView {
 }
 
 @MainActor
-final class ExplorerTableView: NSTableView {
+final class ExplorerTableView: NSTableView, @preconcurrency NSServicesMenuRequestor {
+    private static let filenamesType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
+    static let serviceTypes: [NSPasteboard.PasteboardType] = [.fileURL, filenamesType]
+    var serviceSelection: (() -> [URL])?
+    private var serviceURLs: [URL] {
+        guard let urls = serviceSelection?(), !urls.isEmpty, urls.allSatisfy({
+            $0.isFileURL && !SecureFolderService.isSessionURL($0) && !LocalTransferRecovery.isProtected($0)
+        }) else { return [] }
+        return urls
+    }
+    override func validRequestor(forSendType sendType: NSPasteboard.PasteboardType?, returnType: NSPasteboard.PasteboardType?) -> Any? {
+        if let sendType, Self.serviceTypes.contains(sendType) && returnType == nil && !serviceURLs.isEmpty { return self }
+        return super.validRequestor(forSendType: sendType, returnType: returnType)
+    }
+    func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
+        let urls = serviceURLs
+        guard !urls.isEmpty, !Set(types).isDisjoint(with: Self.serviceTypes) else { return false }
+        pboard.clearContents()
+        if types.contains(.fileURL), !pboard.writeObjects(urls.map { $0 as NSURL }) { return false }
+        if types.contains(Self.filenamesType) {
+            pboard.addTypes([Self.filenamesType], owner: nil)
+            return pboard.setPropertyList(urls.map(\.path), forType: Self.filenamesType)
+        }
+        return true
+    }
+
     var renameCandidate: ((NSPoint) -> (() -> Void)?)?
     private var clickedName: (() -> Void)?
     private var renameDelay: Task<Void, Never>?

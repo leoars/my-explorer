@@ -27,10 +27,48 @@ public struct CloudStorageClient: Sendable {
         let request = try backend.listRequest(prefix: prefix, continuationToken: continuationToken, pageSize: pageSize)
         try Self.validate(request)
         let response = try await requestResult { try await transport.send(request) }
-        try checkStatus(response)
+        try Self.checkStatus(response, provider: connection.provider)
         let page = try backend.parseList(response)
         guard page.nextToken == nil || page.nextToken != continuationToken else { throw CloudFailure(.malformedResponse) }
         return page
+    }
+
+    /// Creates the zero-byte marker used by the S3 console to represent an empty folder.
+    /// A general-purpose bucket has separate keys for a file and its namesake prefix.
+    /// Check both in the parent listing, then conditionally write only the marker.
+    public func createS3Folder(prefix: String, name: String) async throws -> String {
+        guard connection.provider == .s3 else { throw CloudFailure(.invalidConfiguration) }
+        guard FileMutationService.validName(name), !name.utf8.contains(0x2F), !name.utf8.contains(0x5C),
+              !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CloudFailure(.invalidKey) }
+        if !prefix.isEmpty {
+            guard prefix.utf8.first != 0x2F, prefix.utf8.last == 0x2F, !prefix.contains(":"), !prefix.contains("\\") else { throw CloudFailure(.invalidKey) }
+            let parts = prefix.utf8.dropLast().split(separator: 0x2F, omittingEmptySubsequences: false)
+            guard parts.allSatisfy({ !$0.isEmpty && !$0.elementsEqual(".".utf8) && !$0.elementsEqual("..".utf8) })
+                else { throw CloudFailure(.invalidKey) }
+        }
+        let fileKey = prefix + name
+        let marker = fileKey + "/"
+        try Self.validateKey(marker)
+        var token: String?
+        var seenTokens = Set<String>()
+        repeat {
+            let page = try await list(prefix: prefix, continuationToken: token)
+            if page.objects.contains(where: { $0.key.utf8.elementsEqual(fileKey.utf8) || $0.key.utf8.elementsEqual(marker.utf8) }) {
+                throw CloudFailure(.conflict)
+            }
+            token = page.nextToken
+            if let token, !seenTokens.insert(token).inserted { throw CloudFailure(.malformedResponse) }
+        } while token != nil
+
+        let integrity = CloudUploadIntegrity(size: 0, sha256Hex: S3SignatureV4.emptyPayloadHash,
+                                            sha256Base64: Data(SHA256.hash(data: Data())).base64EncodedString())
+        let request = try backend.uploadRequest(key: marker, condition: .absent, integrity: integrity)
+        try Self.validate(request)
+        let response = try await requestResult(checkCancellationAfterResponse: false) { try await transport.send(request) }
+        if response.statusCode == 412 { throw CloudFailure(.conflict) }
+        try Self.checkStatus(response, provider: .s3)
+        _ = try backend.parseUpload(response, key: marker, size: 0)
+        return marker
     }
 
     public func stat(key: String) async throws -> CloudObject? {
@@ -40,7 +78,7 @@ public struct CloudStorageClient: Sendable {
         try Self.validate(request)
         let response = try await requestResult { try await transport.send(request) }
         if response.statusCode == 404 { return nil }
-        try checkStatus(response)
+        try Self.checkStatus(response, provider: connection.provider)
         return try backend.parseStat(response, key: key)
     }
 
@@ -62,13 +100,13 @@ public struct CloudStorageClient: Sendable {
         case 412: return .changed
         case 500...599: return .indeterminate
         default:
-            try checkStatus(response)
+            try Self.checkStatus(response, provider: connection.provider)
             return .indeterminate
         }
     }
 
     public func upload(fileURL: URL, key: String, condition: CloudWriteCondition = .absent,
-                       progress: CloudProgressHandler? = nil) async throws -> CloudObject {
+                       s3Metadata: S3ObjectMetadata? = nil, progress: CloudProgressHandler? = nil) async throws -> CloudObject {
         try Self.checkCancellation()
         try Self.validateKey(key)
         if case .matches(let version) = condition, version.isEmpty || version.contains("\r") || version.contains("\n") {
@@ -81,7 +119,13 @@ public struct CloudStorageClient: Sendable {
         defer { snapshot.remove() }
         try Self.checkCancellation()
         let size = snapshot.integrity.size
-        var request = try backend.uploadRequest(key: key, condition: condition, integrity: snapshot.integrity)
+        var request: URLRequest
+        if let s3Metadata {
+            guard let s3 = backend as? S3CloudBackend else { throw CloudFailure(.invalidConfiguration) }
+            request = try s3.uploadRequest(key: key, condition: condition, integrity: snapshot.integrity, metadata: s3Metadata)
+        } else {
+            request = try backend.uploadRequest(key: key, condition: condition, integrity: snapshot.integrity)
+        }
         request.setValue(String(size), forHTTPHeaderField: "Content-Length")
         try Self.validate(request)
         progress?(CloudTransferProgress(completedBytes: 0, totalBytes: size))
@@ -90,13 +134,29 @@ public struct CloudStorageClient: Sendable {
         let response = try await requestResult(checkCancellationAfterResponse: false) {
             try await transport.upload(request, fileURL: snapshot.payload, progress: progress)
         }
-        try checkStatus(response)
+        try Self.checkStatus(response, provider: connection.provider)
         let object = try backend.parseUpload(response, key: key, size: size)
         progress?(CloudTransferProgress(completedBytes: size, totalBytes: size))
         return object
     }
 
     public func download(key: String, to destination: URL, matchingVersion: String? = nil, progress: CloudProgressHandler? = nil) async throws -> URL {
+        _ = try await downloadPayload(key: key, to: destination, matchingVersion: matchingVersion,
+                                      preserveS3Metadata: false, progress: progress)
+        return destination
+    }
+
+    public func downloadS3Backup(key: String, to destination: URL, matchingVersion: String) async throws -> S3ObjectMetadata {
+        guard connection.provider == .s3 else { throw CloudFailure(.invalidConfiguration) }
+        guard let metadata = try await downloadPayload(key: key, to: destination, matchingVersion: matchingVersion,
+                                                       preserveS3Metadata: true, progress: nil) else {
+            throw CloudFailure(.malformedResponse)
+        }
+        return metadata
+    }
+
+    private func downloadPayload(key: String, to destination: URL, matchingVersion: String?, preserveS3Metadata: Bool,
+                                 progress: CloudProgressHandler?) async throws -> S3ObjectMetadata? {
         try Self.checkCancellation()
         try Self.validateKey(key)
         var request = try backend.downloadRequest(key: key, matchingVersion: matchingVersion)
@@ -107,7 +167,7 @@ public struct CloudStorageClient: Sendable {
         let payload = staging.appendingPathComponent("payload")
         progress?(CloudTransferProgress(completedBytes: 0, totalBytes: nil))
         let response = try await requestResult { try await transport.download(request, to: payload, progress: progress) }
-        try checkStatus(response)
+        try Self.checkStatus(response, provider: connection.provider)
         guard response.statusCode == 200 else { throw CloudFailure(.malformedResponse, detail: "Unexpected partial download") }
         // URLSession may transparently decode Content-Encoding. Refuse instead of silently changing object bytes.
         if let encoding = response.header("Content-Encoding"), !encoding.isEmpty, encoding.lowercased() != "identity" {
@@ -117,6 +177,7 @@ public struct CloudStorageClient: Sendable {
             let actual = response.header(connection.provider == .gcs ? "x-goog-generation" : "ETag")
             guard actual == matchingVersion else { throw CloudFailure(.preconditionFailed, detail: "Downloaded object changed") }
         }
+        let metadata = preserveS3Metadata ? try S3ObjectMetadata(response: response) : nil
         let verifyWorker = Task.detached(priority: .userInitiated) {
             try CloudUploadSnapshot.verifyDownload(payload, response: response, provider: connection.provider)
         }
@@ -126,7 +187,7 @@ public struct CloudStorageClient: Sendable {
             throw CloudFailure(errno == EEXIST || errno == ENOTEMPTY ? .localConflict : .io)
         }
         progress?(CloudTransferProgress(completedBytes: size, totalBytes: size))
-        return destination
+        return metadata
     }
 
     private func requestResult(checkCancellationAfterResponse: Bool = true,
@@ -154,8 +215,8 @@ public struct CloudStorageClient: Sendable {
     private static func checkCancellation() throws {
         if Task.isCancelled { throw CloudFailure(.cancelled) }
     }
-    private func checkStatus(_ response: CloudResponse) throws {
-        if connection.provider == .s3, let reason = S3ErrorResponse.reason(for: response) {
+    static func checkStatus(_ response: CloudResponse, provider: CloudProvider) throws {
+        if provider == .s3, let reason = S3ErrorResponse.reason(for: response) {
             throw CloudFailure(reason)
         }
         switch response.statusCode {
@@ -298,4 +359,69 @@ internal struct CloudUploadSnapshot: Sendable {
         first.st_ctimespec.tv_nsec == second.st_ctimespec.tv_nsec
     }
     private static func checkCancellation() throws { if Task.isCancelled { throw CloudFailure(.cancelled) } }
+}
+
+public struct S3MoveFailure: Error, Sendable {
+    public enum Reason: Sendable { case copyUnconfirmed, sourceRetained, deleteUnconfirmed }
+    public let reason: Reason
+    public let sourceKey: String
+    public let destinationKey: String
+}
+
+extension CloudStorageClient {
+    public static func s3MoveDestination(key: String, into prefix: String) throws -> String {
+        try Self.validateKey(key)
+        guard prefix.isEmpty || prefix.utf8.last == 47 else { throw CloudFailure(.invalidKey) }
+        let parts = key.utf8.split(separator: 47, omittingEmptySubsequences: false)
+        let folders = prefix.utf8.dropLast().split(separator: 47, omittingEmptySubsequences: false)
+        func validComponent(_ bytes: Substring.UTF8View) -> Bool {
+            !bytes.isEmpty && !bytes.elementsEqual(".".utf8) && !bytes.elementsEqual("..".utf8)
+        }
+        guard parts.allSatisfy(validComponent), prefix.isEmpty || folders.allSatisfy(validComponent),
+              let name = parts.last else { throw CloudFailure(.invalidKey) }
+        let destination = prefix + String(decoding: name, as: UTF8.self)
+        try Self.validateKey(destination)
+        guard !key.utf8.elementsEqual(destination.utf8) else { throw CloudFailure(.conflict) }
+        return destination
+    }
+
+    /// Moves one current object within the bucket. Neither step is retried after an ambiguous response.
+    public func moveS3File(key: String, into prefix: String) async throws -> CloudObject {
+        guard let s3 = backend as? S3CloudBackend else { throw CloudFailure(.invalidConfiguration) }
+        let destination = try Self.s3MoveDestination(key: key, into: prefix)
+        guard let source = try await stat(key: key) else { throw CloudFailure(.notFound) }
+        guard let version = source.version, let size = source.size else { throw CloudFailure(.malformedResponse) }
+        guard size <= Self.maximumUploadBytes else { throw CloudFailure(.limitExceeded) }
+        // At the key length limit a namesake prefix cannot exist.
+        if destination.utf8.count < 1024 {
+            let page = try await list(prefix: destination + "/", pageSize: 1)
+            guard page.objects.isEmpty && page.nextToken == nil else { throw CloudFailure(.conflict) }
+        }
+
+        func partial(_ reason: S3MoveFailure.Reason) -> S3MoveFailure {
+            S3MoveFailure(reason: reason, sourceKey: key, destinationKey: destination)
+        }
+        let request = try s3.copyRequest(source: key, matchingVersion: version, destination: destination)
+        try Self.validate(request)
+        try Self.checkCancellation()
+        let response: CloudResponse
+        do { response = try await transport.send(request) }
+        catch { throw partial(.copyUnconfirmed) }
+        if (400..<500).contains(response.statusCode) { try Self.checkStatus(response, provider: .s3) }
+        let copy: CloudObject
+        do {
+            let copiedVersion = try s3.copiedETag(response)
+            guard let observed = try await stat(key: destination),
+                  observed.version == copiedVersion, observed.size == size else { throw partial(.copyUnconfirmed) }
+            copy = observed
+        } catch { throw partial(.copyUnconfirmed) }
+        let deletion: CloudDeletionOutcome
+        do { deletion = try await delete(key: key, matchingVersion: version) }
+        catch { throw partial(.sourceRetained) }
+        switch deletion {
+        case .acknowledged, .absent: return copy
+        case .changed: throw partial(.sourceRetained)
+        case .indeterminate: throw partial(.deleteUnconfirmed)
+        }
+    }
 }

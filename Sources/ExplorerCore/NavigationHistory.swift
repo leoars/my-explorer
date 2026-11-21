@@ -36,6 +36,11 @@ public struct NavigationHistory: Equatable, Sendable {
         forward.removeAll()
     }
 
+    mutating func forgetCloudConnection(_ id: UUID) {
+        back.removeAll { RemoteLocation.parse($0.url)?.connectionID == id }
+        forward.removeAll { RemoteLocation.parse($0.url)?.connectionID == id }
+    }
+
     public mutating func goBack() {
         guard let destination = back.popLast() else { return }
         forward.append(current)

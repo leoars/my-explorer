@@ -9,7 +9,7 @@ import ExplorerLocalization
 final class AppAutomation {
     static let shared = AppAutomation()
     nonisolated static let files = SharedFileOperations { try await CloudAccounts.shared.client(id: $0) }
-    nonisolated static let deletion = StorageDeletionService { try await CloudAccounts.shared.client(id: $0) }
+    nonisolated static let deletion = StorageDeletionService(clientFactory: { try await CloudAccounts.shared.client(id: $0) }, trashLibrary: .shared)
     private(set) var service: AutomationService?
     private var broker: AutomationBroker?
     private var credentials: [UUID: (CloudCredentials, Date)] = [:]

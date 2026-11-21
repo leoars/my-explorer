@@ -4,13 +4,22 @@ import Foundation
 
 /// The filesystem ID keeps a menu opened before ejection bound to its original mount.
 public struct VolumeMount: Equatable, Sendable {
+    public enum Removal: Sendable { case eject, disconnect }
+    public let removal: Removal?
     public let url: URL
     private let id0: Int32
     private let id1: Int32
 
     public static func identify(at url: URL) throws -> Self {
         let stats = try mountStats(at: url)
-        return Self(url: url, id0: stats.f_fsid.val.0, id1: stats.f_fsid.val.1)
+        let resolved = url.resolvingSymlinksInPath().standardizedFileURL
+        var removal: Removal?
+        if resolved.path == url.standardizedFileURL.path, resolved.deletingLastPathComponent().path == "/Volumes" {
+            let info = try? resolved.resourceValues(forKeys: [.volumeIsEjectableKey, .volumeIsRemovableKey, .volumeIsLocalKey])
+            if info?.volumeIsLocal == false { removal = .disconnect }
+            else if info?.volumeIsEjectable == true || info?.volumeIsRemovable == true { removal = .eject }
+        }
+        return Self(removal: removal, url: url, id0: stats.f_fsid.val.0, id1: stats.f_fsid.val.1)
     }
 
     public func capacity() throws -> VolumeCapacity {

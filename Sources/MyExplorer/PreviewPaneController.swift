@@ -14,6 +14,8 @@ final class PreviewPaneController: NSViewController {
     private let placeholder = NSTextField(wrappingLabelWithString: L10n.text("preview.empty"))
     private let previewContainer = NSView()
     private let ocrButton = OutlinedButton()
+    private let actionsButton = NSPopUpButton(frame: .zero, pullsDown: true)
+    private let actionsStack = NSStackView()
     var onExtractText: ((URL) -> Void)?
     private var quickLook: QLPreviewView?
     private let imageView = NSImageView()
@@ -51,7 +53,18 @@ final class PreviewPaneController: NSViewController {
         ocrButton.target = self; ocrButton.action = #selector(extractText)
         ocrButton.isEnabled = false
         ocrButton.setAccessibilityIdentifier("explorer.preview.ocr")
-        for child in [heading, fileName, ocrButton, previewContainer, placeholder] {
+        actionsStack.orientation = .vertical
+        actionsStack.alignment = .leading
+        actionsStack.spacing = 4
+        actionsStack.setContentHuggingPriority(.required, for: .vertical)
+        actionsStack.addArrangedSubview(ocrButton)
+        actionsStack.addArrangedSubview(actionsButton)
+        actionsButton.font = ExplorerStyle.font(.bars)
+        actionsButton.bezelStyle = .regularSquare
+        actionsButton.heightAnchor.constraint(greaterThanOrEqualToConstant: ceil(actionsButton.font!.ascender - actionsButton.font!.descender) + 12).isActive = true
+        actionsButton.setAccessibilityLabel(L10n.text("quick.title"))
+        actionsButton.isHidden = true
+        for child in [heading, fileName, actionsStack, previewContainer, placeholder] {
             child.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(child)
         }
@@ -74,10 +87,10 @@ final class PreviewPaneController: NSViewController {
             fileName.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 8),
             previewContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
             previewContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
-            ocrButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            ocrButton.topAnchor.constraint(equalTo: fileName.bottomAnchor, constant: 6),
-            ocrButton.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
-            previewContainer.topAnchor.constraint(equalTo: ocrButton.bottomAnchor, constant: 10),
+            actionsStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            actionsStack.topAnchor.constraint(equalTo: fileName.bottomAnchor, constant: 6),
+            actionsStack.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            previewContainer.topAnchor.constraint(equalTo: actionsStack.bottomAnchor, constant: 10),
             previewContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8),
             placeholder.centerYAnchor.constraint(equalTo: previewContainer.centerYAnchor),
             placeholder.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
@@ -88,6 +101,16 @@ final class PreviewPaneController: NSViewController {
 
     func update(entries: [FileEntry]) {
         loadViewIfNeeded()
+        defer {
+            if let menu = QuickActionCommands.menu(for: entries, in: view.window) {
+                menu.insertItem(withTitle: L10n.text("quick.title"), action: nil, keyEquivalent: "", at: 0)
+                actionsButton.menu = menu
+                actionsButton.isHidden = false
+            } else {
+                actionsButton.menu = nil
+                actionsButton.isHidden = true
+            }
+        }
         guard entries.count == 1, let entry = entries.first else {
             clear(messageKey: entries.isEmpty ? "preview.empty" : "preview.multiple")
             return
@@ -160,6 +183,8 @@ final class PreviewPaneController: NSViewController {
     }
 
     func closePreview() {
+        actionsButton.menu = nil
+        actionsButton.isHidden = true
         ocrButton.isEnabled = false
         generation &+= 1
         loadTask?.cancel(); loadTask = nil

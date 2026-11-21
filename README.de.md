@@ -6,9 +6,11 @@ My Explorer ist ein nativer Dateimanager für macOS. Ordnerbaum, Tabs und Detail
 
 ![Deutsche Dateiliste mit Namensfilter und zwei geöffneten Tabs](docs/screenshots/navigation-de.png)
 
-## Signierte App installieren
+## Version 28 installieren
 
-Öffnen Sie das DMG der Vorabversion, kopieren Sie **My Explorer** nach **Programme**, werfen Sie das Image aus und öffnen Sie die App. Version 27 ist mit Apple Development signiert und nicht notarisiert. [GitHub Releases](https://github.com/leoars/my-explorer/releases/tag/v0.1.0-private-beta.12-build27)
+Öffne die DMG-Datei, kopiere **My Explorer** in den Ordner **Programme**, wirf das Image aus und öffne die App. Diese Version ist mit einem Apple-Development-Zertifikat signiert und wurde von Apple nicht notarisiert. [Für Mac herunterladen](https://github.com/leoars/my-explorer/releases/tag/v0.1.0)
+
+In Version 28 kannst du S3-Zugangsdaten aus einer CSV-Datei importieren, einen Bucket auswählen, Ordner erstellen und Dateien per Drag-and-drop oder durch Ausschneiden und Einfügen zwischen Ordnern verschieben. Wenn du in My Explorer eine Datei aus S3 löschst, kannst du sie in derselben Sitzung mit **⌘Z** oder **Strg+Z** wiederherstellen.
 
 ## Kompilieren und installieren
 

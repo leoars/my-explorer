@@ -60,6 +60,14 @@ public actor LocalTransferService {
         }
     }
 
+    func recordS3Trash(_ item: S3DeletedItem, group: UUID) async {
+        if history.last?.trashGroup == group {
+            history[history.count - 1].s3Items.append(item)
+        } else {
+            await appendRecord(LocalTransferRecord(kind: .trash, actions: [], trashGroup: group, s3Items: [item]))
+        }
+    }
+
     public func undo(resolveTrashConflict: @escaping @Sendable (StorageConflict) async -> StorageConflictChoice = { _ in .cancel },
                      progress: (@Sendable (StorageTransferProgress) -> Void)? = nil,
                      control: LocalTransferControl = LocalTransferControl()) async throws -> [URL] {
@@ -107,6 +115,14 @@ public actor LocalTransferService {
         var targets: [(TrashedItem, URL)] = []
         var completed: [URL] = []
         do {
+            guard let group = record.trashGroup else { throw LocalTransferFailure(.undoUnavailable) }
+            for item in record.s3Items.reversed() {
+                let url = try await item.restore(resolveConflict: resolveConflict, control: control)
+                if let index = history.firstIndex(where: { $0.trashGroup == group }) {
+                    history[index].s3Items.removeAll { $0 === item }
+                }
+                completed.append(url)
+            }
             // Resolve all known collisions before moving any item in the selection.
             var reserved = Set(record.trashed.map { $0.origin.url.explorerIdentity })
             for item in record.trashed.reversed() {
@@ -118,7 +134,9 @@ public actor LocalTransferService {
                         return LocalTransferFS.exists(item.origin.url)
                     }
                 } catch let failure as LocalTransferFailure where failure.reason == .trashUnavailable {
-                    history[history.count - 1].trashed.removeAll { $0.location == item.location }
+                    if let index = history.firstIndex(where: { $0.trashGroup == group }) {
+                        history[index].trashed.removeAll { $0.location == item.location }
+                    }
                     throw failure
                 }
                 if occupied {
@@ -134,17 +152,28 @@ public actor LocalTransferService {
             }
             for (item, destination) in targets {
                 try await Self.worker(control) { try item.restore(to: destination) }
-                history[history.count - 1].trashed.removeLast()
+                if let index = history.firstIndex(where: { $0.trashGroup == group }) {
+                    history[index].trashed.removeAll { $0.location == item.location }
+                }
                 completed.append(destination)
             }
         } catch {
-            if history.last?.trashed.isEmpty == true { history.removeLast() }
+            history.removeAll { $0.trashGroup == record.trashGroup && $0.trashed.isEmpty && $0.s3Items.isEmpty }
             if !completed.isEmpty { await rebaseHistory() }
+            if completed.isEmpty, let cloudError = error as? CloudFailure { throw cloudError }
             throw LocalTransferFailure((error as? LocalTransferFailure)?.reason ?? .io, completed: completed)
         }
-        history.removeLast()
+        history.removeAll { $0.trashGroup == record.trashGroup && $0.trashed.isEmpty && $0.s3Items.isEmpty }
         await rebaseHistory()
         return completed
+    }
+
+    public func forgetTrash(location: URL) async {
+        for index in history.indices where history[index].kind == .trash {
+            history[index].trashed.removeAll { $0.location.standardizedFileURL.path == location.standardizedFileURL.path }
+        }
+        history.removeAll { $0.kind == .trash && $0.trashed.isEmpty && $0.s3Items.isEmpty }
+        await rebaseHistory()
     }
 
     /// Discards undo history after expiry/quit. Modified backups are retained for manual recovery.
@@ -333,6 +362,7 @@ private struct LocalTransferRecord: Sendable {
     var actions: [LocalTransferAction]
     var trashGroup: UUID? = nil
     var trashed: [TrashedItem] = []
+    var s3Items: [S3DeletedItem] = []
 }
 private struct LocalTransferAction: Sendable {
     let source: URL
@@ -893,5 +923,34 @@ private final class LocalTransferCopyContext {
     func report(_ bytes: Int64) {
         let delta = max(0, bytes - last); last = max(last, bytes)
         tracker?.report(bytes: delta, source: source, destination: destination)
+    }
+}
+
+// Restore to another volume using the same content and metadata verification as a normal local move.
+// Publish the verified copy exclusively before touching the original Trash item.
+extension LocalTransferService {
+    static func restoreAcrossVolumes(source: URL, target: URL, parent: Int32, removeOriginal: () throws -> Void) throws {
+        let control = LocalTransferControl()
+        let original = try LocalTransferFS.snapshot(source, control: control)
+        let fm = FileManager.default
+        let temporary = try fm.url(for: .itemReplacementDirectory, in: .userDomainMask,
+                                   appropriateFor: target.deletingLastPathComponent(), create: true)
+        defer { try? fm.removeItem(at: temporary) }
+        let copy = temporary.appendingPathComponent("restored")
+        try LocalTransferFS.copyTree(source, to: copy, control: control)
+        let copied = try LocalTransferFS.snapshot(copy, control: control)
+        guard original.samePayload(copied) else { throw LocalTransferFailure(.copyVerificationFailed) }
+        try LocalTransferFS.requireSnapshot(source, original, control: control)
+        guard renameatx_np(AT_FDCWD, copy.path, parent, target.lastPathComponent, UInt32(RENAME_EXCL)) == 0 else {
+            throw LocalTransferFailure(errno == EEXIST || errno == ENOTEMPTY ? .conflict : .io)
+        }
+        do {
+            try LocalTransferFS.requireSnapshot(source, original, control: control)
+            try removeOriginal()
+        } catch { throw LocalTransferFailure(.recoveryRequired, recoveryLocations: [target]) }
+    }
+
+    static func restoredName(_ proposed: URL, directory: Bool) throws -> URL {
+        try LocalTransferFS.availableName(proposed, directory: directory)
     }
 }

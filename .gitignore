@@ -12,3 +12,5 @@ xcuserdata/
 *.p8
 *.mobileprovision
 *.provisionprofile
+
+private-info/

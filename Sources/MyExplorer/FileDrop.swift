@@ -34,7 +34,8 @@ enum FileDrop {
         let sameVolume = local && destinationVolume != nil && Set(urls.map { $0.deletingLastPathComponent() }).allSatisfy {
             volume(of: $0) == destinationVolume
         }
-        let move = local && !wantsCopy && (modifiers.contains(.command) || sameVolume) && allowed.contains(.move)
+        let prefersMove = local ? modifiers.contains(.command) || sameVolume : !destination.isFileURL
+        let move = prefersMove && !wantsCopy && allowed.contains(.move)
         if move && FileCommands.shared.canTransfer(urls, to: destination, move: true) { return .move }
         if allowed.contains(.copy) && FileCommands.shared.canTransfer(urls, to: destination, move: false) { return .copy }
         return []

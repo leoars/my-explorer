@@ -6,9 +6,11 @@ My Explorer は macOS 用のネイティブファイルマネージャーです�
 
 ![日本語表示で名前を絞り込んだファイル一覧と、開いている二つのタブ](docs/screenshots/navigation-ja.png)
 
-## 署名済みアプリのインストール
+## バージョン 28 のインストール
 
-プレリリースの DMG を開き、**My Explorer** を「アプリケーション」にコピーしてから、ディスクイメージを取り出し、アプリを開きます。バージョン 27 は Apple Development で署名済みですが、公証されていません。 [GitHub Releases](https://github.com/leoars/my-explorer/releases/tag/v0.1.0-private-beta.12-build27)
+DMG を開き、**My Explorer** を「アプリケーション」にコピーします。ディスクイメージを取り出し、アプリを開きます。このバージョンは Apple Development 証明書で署名されています。Apple による公証は受けていません。 [Mac 版をダウンロード](https://github.com/leoars/my-explorer/releases/tag/v0.1.0)
+
+バージョン 28 では、CSV ファイルから S3 の認証情報を読み込み、バケットを選んでフォルダを作成できます。ファイルはドラッグ＆ドロップまたはカット＆ペーストでフォルダ間を移動できます。My Explorer で S3 のファイルを削除した場合は、同じセッション中に **⌘Z** または **Ctrl+Z** で復元できます。
 
 ## ビルドとインストール
 

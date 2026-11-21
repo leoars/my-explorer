@@ -2,8 +2,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mode="${1:-all}"
-if [[ "$mode" != all && "$mode" != git && "$mode" != shutdown && "$mode" != session && "$mode" != ocr && "$mode" != stability && "$mode" != buttons && "$mode" != volumes && "$mode" != vault && "$mode" != dialogs && "$mode" != trash-undo && "$mode" != rename && "$mode" != deletion && "$mode" != address && "$mode" != clipboard ]]; then
-  echo "Usage: $0 [all|address|git|shutdown|session|ocr|stability|buttons|volumes|vault|clipboard|dialogs|deletion|rename|trash-undo]" >&2
+if [[ "$mode" != all && "$mode" != git && "$mode" != shutdown && "$mode" != session && "$mode" != ocr && "$mode" != stability && "$mode" != buttons && "$mode" != eject && "$mode" != volumes && "$mode" != vault && "$mode" != dialogs && "$mode" != trash-undo && "$mode" != rename && "$mode" != deletion && "$mode" != search && "$mode" != address && "$mode" != clipboard && "$mode" != s3-drag ]]; then
+  echo "Usage: $0 [all|search|address|git|shutdown|session|ocr|stability|buttons|eject|volumes|vault|clipboard|dialogs|deletion|rename|trash-undo|s3-drag]" >&2
   exit 2
 fi
 if [[ "$mode" == all ]]; then
@@ -70,17 +70,21 @@ if "SMOKE FAIL:" in output or sum(line.startswith("SMOKE PASS:") for line in out
     raise SystemExit("Smoke app did not finish successfully")
 PYLOG
 }
+if [[ "$mode" == s3-drag || "$mode" == all ]]; then
+  run_smoke --smoke-test --s3-drag-smoke --directory "$fixture_root"
+  if [[ "$mode" == s3-drag ]]; then exit 0; fi
+fi
+if [[ "$mode" == search || "$mode" == all ]]; then
+  run_smoke --smoke-test --file-search-smoke --directory "$fixture_root"
+  if [[ "$mode" == search ]]; then exit 0; fi
+fi
 if [[ "$mode" == address || "$mode" == all ]]; then
   run_smoke --smoke-test --address-completion-smoke --directory "$fixture_root"
   if [[ "$mode" == address ]]; then exit 0; fi
 fi
 if [[ "$mode" == trash-undo || "$mode" == all ]]; then
   run_smoke --smoke-test --trash-undo-smoke --directory "$fixture_root"
-  if [[ "$mode" == address || "$mode" == all ]]; then
-  run_smoke --smoke-test --address-completion-smoke --directory "$fixture_root"
-  if [[ "$mode" == address ]]; then exit 0; fi
-fi
-if [[ "$mode" == trash-undo ]]; then exit 0; fi
+  if [[ "$mode" == trash-undo ]]; then exit 0; fi
 fi
 if [[ "$mode" == rename || "$mode" == all ]]; then
   run_smoke --smoke-test --inline-rename-smoke --directory "$fixture_root" --light
@@ -101,6 +105,17 @@ if [[ "$mode" == vault || "$mode" == all ]]; then
 fi
 if [[ "$mode" == clipboard ]]; then
   run_smoke --smoke-test --clipboard-smoke --directory "$fixture_root"
+  exit 0
+fi
+if [[ "$mode" == eject ]]; then
+  token="$(uuidgen)"
+  volume="/Volumes/MyExplorer-$token"
+  hdiutil create -quiet -size 16m -fs HFS+ -volname "MyExplorer-$token" "$fixture_root/eject.dmg"
+  hdiutil attach -nobrowse "$fixture_root/eject.dmg" >/dev/null
+  trap 'if [[ -d "$volume" ]]; then hdiutil detach "$volume" >/dev/null; fi; rm -rf "$fixture_root"; defaults delete "$smoke_suite" >/dev/null 2>&1 || true' EXIT
+  printf %s "$token" > "$fixture_root/eject-fixture"
+  cp "$fixture_root/eject-fixture" "$volume/eject-fixture"
+  run_smoke --smoke-test --eject-smoke --directory "$fixture_root"
   exit 0
 fi
 if [[ "$mode" == volumes ]]; then
