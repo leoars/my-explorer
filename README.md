@@ -6,11 +6,11 @@ My Explorer is a native macOS file manager. Its folder tree, tabs and Details vi
 
 ![English file list filtered by name, with two tabs open](docs/screenshots/navigation-en.png)
 
-## Install version 29
+## Install version 30
 
-Open the DMG, copy **My Explorer** to **Applications**, eject the disk image and open the app. This release is signed with an Apple Development certificate and has not been notarized by Apple. [Download for Mac](https://github.com/leoars/my-explorer/releases/latest)
+Open the DMG, copy **My Explorer** to **Applications**, eject the disk image and open the app. This release is signed with Developer ID and notarized by Apple. [Download for Mac](https://github.com/leoars/my-explorer/releases/latest)
 
-In version 29, dragging files over the folder tree opens a folder only after you pause on it for a second, so the folders along the way stay closed. In the address bar, the first click selects the whole address, a second click places the cursor and **Esc** restores the current address. The AI assistant connection moved to **Options → Integrations**, and the app has a new icon.
+Version 30 is the first one signed with Developer ID and notarized by Apple, so macOS opens it without the extra security step. After you open the app once, its icon appears in Finder without the grey frame. If you are updating from an earlier version, macOS may ask again for privacy permissions and for access to the passwords the app saved in Keychain.
 
 ## Build and install
 

@@ -6,11 +6,11 @@ My Explorer는 macOS용 네이티브 파일 관리자입니다. Windows 파일 �
 
 ![한국어 화면에서 이름으로 필터링한 파일 목록과 열려 있는 탭 두 개](docs/screenshots/navigation-ko.png)
 
-## 버전 29 설치
+## 버전 30 설치
 
-DMG를 열고 **My Explorer**를 **응용 프로그램** 폴더에 복사하세요. 디스크 이미지를 추출한 뒤 앱을 여세요. 이 버전은 Apple Development 인증서로 서명되었으며 Apple의 공증을 받지 않았습니다. [Mac용 다운로드](https://github.com/leoars/my-explorer/releases/latest)
+DMG를 열고 **My Explorer**를 **응용 프로그램** 폴더에 복사하세요. 디스크 이미지를 추출한 뒤 앱을 여세요. 이 버전은 Developer ID로 서명되었으며 Apple의 공증을 받았습니다. [Mac용 다운로드](https://github.com/leoars/my-explorer/releases/latest)
 
-버전 29에서는 파일을 폴더 트리 위로 끌 때 포인터를 1초 동안 멈춘 폴더만 열리고, 지나가는 폴더는 닫힌 상태로 유지됩니다. 주소 표시줄에서는 첫 번째 클릭으로 주소 전체를 선택하고, 두 번째 클릭으로 커서를 놓으며, **Esc**로 현재 주소를 복원합니다. AI 도우미 연결은 **옵션 → 연동**으로 이동했고, 앱 아이콘도 새로워졌습니다.
+버전 30은 Developer ID로 서명되고 Apple의 공증을 받은 첫 번째 버전이므로, macOS가 추가 보안 단계 없이 엽니다. 앱을 한 번 열고 나면 Finder에서 아이콘이 회색 테두리 없이 표시됩니다. 이전 버전에서 업데이트하는 경우 macOS가 개인정보 보호 권한과 앱이 키체인에 저장한 암호에 대한 접근을 다시 요청할 수 있습니다.
 
 ## 빌드 및 설치
 

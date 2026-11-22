@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+import ExplorerCore
 import Foundation
 
 private enum InstallerError: Error { case invalid }
@@ -60,6 +61,9 @@ enum UpdateInstaller {
     }
 
     static func install(_ staged: URL, over current: URL) throws {
+        // The custom Finder icon the app gives itself is outside the signature; drop it so the
+        // installed copy verifies as signed. The new version applies its own icon when it opens.
+        try CustomBundleIcon.remove(at: current)
         try verify(current, identifier: appID)
         try verify(staged, identifier: appID)
         guard try build(staged) > build(current),

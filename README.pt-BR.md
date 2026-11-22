@@ -6,11 +6,11 @@ My Explorer é um gerenciador de arquivos nativo para macOS. Ele reúne a árvor
 
 ![Lista em português filtrada pelo nome do arquivo, com duas abas abertas](docs/screenshots/navigation-pt-BR.png)
 
-## Instalar a versão 29
+## Instalar a versão 30
 
-Abra o DMG, copie **My Explorer** para **Aplicativos**, ejete a imagem de disco e abra o aplicativo. Esta versão foi assinada com um certificado Apple Development e não foi notarizada pela Apple. [Baixar para Mac](https://github.com/leoars/my-explorer/releases/latest)
+Abra o DMG, copie **My Explorer** para **Aplicativos**, ejete a imagem de disco e abra o aplicativo. Esta versão foi assinada com Developer ID e notarizada pela Apple. [Baixar para Mac](https://github.com/leoars/my-explorer/releases/latest)
 
-Na versão 29, ao arrastar arquivos sobre a árvore de pastas, uma pasta só se abre depois de o ponteiro ficar parado sobre ela por um segundo; as pastas pelo caminho continuam fechadas. Na barra de endereços, o primeiro clique seleciona o endereço inteiro, o segundo posiciona o cursor e **Esc** restaura o endereço atual. A conexão com assistentes de IA passou para **Opções → Integrações**, e o aplicativo tem um novo ícone.
+A versão 30 é a primeira assinada com Developer ID e notarizada pela Apple, então o macOS a abre sem a etapa extra de segurança. Depois que você abre o aplicativo uma vez, o ícone aparece no Finder sem a moldura cinza. Se você está atualizando de uma versão anterior, o macOS pode pedir de novo as permissões de privacidade e o acesso às senhas que o aplicativo guardou nas Chaves.
 
 ## Instalar a partir do código-fonte
 

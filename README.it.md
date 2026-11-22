@@ -6,11 +6,11 @@ My Explorer è un gestore di file nativo per macOS. Unisce l’albero delle cart
 
 ![Elenco in italiano filtrato per nome, con due schede aperte](docs/screenshots/navigation-it.png)
 
-## Installare la versione 29
+## Installare la versione 30
 
-Apri il DMG, copia **My Explorer** in **Applicazioni**, espelli l’immagine disco e apri l’app. Questa versione è firmata con un certificato Apple Development e non è stata autenticata da Apple tramite notarizzazione. [Scarica per Mac](https://github.com/leoars/my-explorer/releases/latest)
+Apri il DMG, copia **My Explorer** in **Applicazioni**, espelli l’immagine disco e apri l’app. Questa versione è firmata con Developer ID e autenticata da Apple tramite notarizzazione. [Scarica per Mac](https://github.com/leoars/my-explorer/releases/latest)
 
-Nella versione 29, quando trascini i file sull’albero delle cartelle, una cartella si apre solo dopo che il puntatore vi resta fermo per un secondo; le cartelle lungo il percorso restano chiuse. Nella barra degli indirizzi, il primo clic seleziona l’intero indirizzo, il secondo posiziona il cursore ed **Esc** ripristina l’indirizzo corrente. Il collegamento agli assistenti IA si trova ora in **Opzioni → Integrazioni** e l’app ha una nuova icona.
+La versione 30 è la prima firmata con Developer ID e autenticata da Apple tramite notarizzazione, quindi macOS la apre senza il passaggio di sicurezza aggiuntivo. Dopo aver aperto l’app una volta, la sua icona compare nel Finder senza la cornice grigia. Se aggiorni da una versione precedente, macOS potrebbe chiedere di nuovo i permessi di privacy e l’accesso alle password che l’app ha salvato nel Portachiavi.
 
 ## Compilare e installare
 

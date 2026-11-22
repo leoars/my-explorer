@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-// Gives an installed copy of the app a custom Finder icon so macOS shows the artwork edge to
-// edge instead of inside its grey plate. The custom icon lives outside the code signature, so
-// apply it only to the installed bundle, never to dist/ before signing or packaging.
+// Applies or clears the custom Finder icon that shows the artwork edge to edge instead of
+// inside the grey plate macOS puts behind free-form icons. From build 30 the app gives an
+// installed copy this icon by itself when it opens, and its updater removes it before
+// verifying the signature, so this script is only for manual checks. The icon lives outside
+// the code signature: never apply it to dist/ before signing or packaging, and clear it from a
+// build 28 or 29 copy before an in-app update, because those builds refuse to update with it.
 //   swift scripts/finder-icon.swift apply "/Applications/My Explorer.app"
 //   swift scripts/finder-icon.swift clear "/Applications/My Explorer.app"
 import AppKit

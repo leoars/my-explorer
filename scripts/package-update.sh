@@ -13,6 +13,17 @@ metadata = runpy.run_path("scripts/beta-metadata.py")
 metadata["verified_metadata"](pathlib.Path(sys.argv[1]), sys.argv[2] == "true", allow_public=True)
 PYMETA
 identity="${MY_EXPLORER_SIGNING_IDENTITY:?Set the Apple signing identity used for the release}"
+# A Developer ID build must already carry its notarization ticket (scripts/notarize-app.sh).
+notarize=false
+dmg_options=()
+signature=$(codesign --display --verbose=2 "$app" 2>&1)
+if [[ "$signature" == *"Authority=Developer ID Application:"* ]]; then
+  # Decided by the app's actual signature, so the identity may be given by name or by hash.
+  notarize=true
+  dmg_options=(--timestamp)
+  profile="${MY_EXPLORER_NOTARY_PROFILE:-my-suite-notary}"
+  xcrun stapler validate "$app"
+fi
 requirement='anchor apple generic and certificate leaf[subject.OU] = "GV4SHC87M4"'
 codesign --verify --deep --strict "-R=$requirement and identifier \"io.github.leoars.myexplorer\"" "$app"
 for arch in arm64 x86_64; do lipo "$app/Contents/MacOS/MyExplorer" -verify_arch "$arch"; done
@@ -25,8 +36,14 @@ mkdir "$work/payload"
 ditto "$app" "$work/payload/My Explorer.app"
 name="MyExplorer-macOS-universal-$build.dmg"
 hdiutil create -quiet -fs HFS+ -format UDZO -volname "My Explorer Update" -srcfolder "$work/payload" "$work/$name"
-codesign --force --sign "$identity" --identifier io.github.leoars.myexplorer.update "$work/$name"
+codesign --force --sign "$identity" --identifier io.github.leoars.myexplorer.update ${dmg_options[@]+"${dmg_options[@]}"} "$work/$name"
 codesign --verify --strict "-R=$requirement and identifier \"io.github.leoars.myexplorer.update\"" "$work/$name"
+if [[ "$notarize" == true ]]; then
+  xcrun notarytool submit "$work/$name" --keychain-profile "$profile" --wait
+  xcrun stapler staple "$work/$name"
+  xcrun stapler validate "$work/$name"
+  spctl --assess --type open --context context:primary-signature --verbose "$work/$name"
+fi
 # Publish the complete file locally, refusing to overwrite an existing build.
 ln "$work/$name" "$output/$name"
 echo "$output/$name"

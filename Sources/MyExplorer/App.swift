@@ -31,6 +31,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var interruptionAlert: NSAlert?
     private var quitSmokeExpectation: (code: OperationInterruptionCode?, destination: URL, files: [String: Data])?
 
+    /// Gives an installed copy the custom Finder icon that escapes the grey plate. Only copies in
+    /// an Applications folder qualify, so build output and test bundles keep a clean signature.
+    private static func applyFinderIcon(_ icon: NSImage) {
+        let bundle = Bundle.main.bundleURL.standardizedFileURL
+        let arguments = ProcessInfo.processInfo.arguments
+        let folders = ["/Applications", NSHomeDirectory() + "/Applications"]
+        guard bundle.pathExtension == "app", folders.contains(bundle.deletingLastPathComponent().path),
+              !arguments.contains("--smoke-test"), !arguments.contains("--automation-host"),
+              !CustomBundleIcon.isPresent(at: bundle), FileManager.default.isWritableFile(atPath: bundle.path) else { return }
+        _ = NSWorkspace.shared.setIcon(icon, forFile: bundle.path)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         let arguments = ProcessInfo.processInfo.arguments
         // macOS frames free-form icons in a grey plate; drawing the Dock tile ourselves keeps the
@@ -40,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             tile.imageScaling = .scaleProportionallyUpOrDown
             NSApp.dockTile.contentView = tile
             NSApp.dockTile.display()
+            Self.applyFinderIcon(icon)
         }
         let smoke = arguments.contains("--smoke-test")
         automationHost = arguments.contains("--automation-host") && !smoke

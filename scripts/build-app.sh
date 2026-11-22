@@ -94,7 +94,15 @@ if [[ "${#requested_architectures[@]}" -gt 0 ]]; then
     /usr/bin/lipo "$staged_app/Contents/MacOS/myexplorer-cli" -verify_arch "$architecture"
   done
 fi
-codesign --force --sign "$signing_identity" --identifier "$bundle_identifier.cli" --timestamp=none "$staged_app/Contents/MacOS/myexplorer-cli"
+# A Developer ID build is meant for notarization: hardened runtime, a secure timestamp and the
+# one entitlement the runtime needs for Image Capture. Other identities keep the local settings.
+sign_options=(--timestamp=none)
+app_entitlements=()
+if [[ "$signing_identity" == "Developer ID Application:"* ]]; then
+  sign_options=(--options runtime --timestamp)
+  app_entitlements=(--entitlements Resources/MyExplorer.entitlements)
+fi
+codesign --force --sign "$signing_identity" --identifier "$bundle_identifier.cli" "${sign_options[@]}" "$staged_app/Contents/MacOS/myexplorer-cli"
 cp Resources/Info.plist "$staged_app/Contents/Info.plist"
 for strings in Resources/*.lproj/InfoPlist.strings; do
   locale_dir="$(basename "$(dirname "$strings")")"
@@ -108,8 +116,15 @@ python3 scripts/beta-metadata.py stage-localizations --binary-dir "$binary_dir" 
 if [[ -f "$metadata_state" ]]; then
   python3 scripts/beta-metadata.py write-build-info --state "$stage_root/source-state.json" --app "$staged_app" --configuration "$configuration"
 fi
-# Local signing does not notarize or publish the app. No entitlements or Keychain ACLs are changed.
-codesign --force --sign "$signing_identity" --identifier "$bundle_identifier" --timestamp=none "$staged_app"
+# Signing does not notarize or publish the app; scripts/notarize-app.sh does the notarization.
+codesign --force --sign "$signing_identity" --identifier "$bundle_identifier" "${sign_options[@]}" ${app_entitlements[@]+"${app_entitlements[@]}"} "$staged_app"
+# The mode above comes from the identity's name. Refuse a Developer ID signature reached another
+# way (for example by certificate hash), which would lack the runtime and timestamp.
+signature=$(codesign --display --verbose=2 "$staged_app" 2>&1)
+if [[ "$signature" == *"Authority=Developer ID Application:"* && "$signature" != *"(runtime)"* ]]; then
+  echo "Name the Developer ID identity in full (\"Developer ID Application: ...\") so the build is hardened." >&2
+  exit 2
+fi
 codesign --verify --strict --deep "$staged_app"
 python3 scripts/beta-metadata.py verify-signing --app "$staged_app"
 "$staged_app/Contents/MacOS/MyExplorer" --verify-localizations

@@ -242,7 +242,10 @@ def build_info(app, configuration, state_path):
     metadata = dict(state, **app_info(app), schemaVersion=SCHEMA,
                     architectures=architectures(app), configuration=configuration,
                     builtAtUTC=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
-                    signing=signature_description(app / "Contents/MacOS/myexplorer-cli")["kind"], notarized=False)
+                    signing=signature_description(app / "Contents/MacOS/myexplorer-cli")["kind"],
+                    # BuildInfo is sealed by the signature before Apple sees the app, so this records
+                    # that the build is made for notarization; packaging checks the stapled ticket.
+                    notarized=signature_description(app / "Contents/MacOS/myexplorer-cli")["kind"] == "developer-id")
     resources = app / "Contents/Resources"
     write_json(resources / "BuildInfo.json", metadata)
     with open(resources / "BuildInfo.plist", "wb") as stream:
@@ -272,6 +275,9 @@ def verified_metadata(app, allow_dirty, allow_public=False):
     if not (metadata["releaseChannel"].startswith("private-beta") or (allow_public and metadata["releaseChannel"] == "public")):
         raise RuntimeError("The bundle is not marked as a private-beta channel")
     verify_signing(app)
+    if metadata["notarized"]:
+        # A build made for notarization must carry its ticket before it is packaged.
+        run(["/usr/bin/xcrun", "stapler", "validate", str(app)])
     return metadata
 
 

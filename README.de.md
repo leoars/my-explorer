@@ -6,11 +6,11 @@ My Explorer ist ein nativer Dateimanager für macOS. Ordnerbaum, Tabs und Detail
 
 ![Deutsche Dateiliste mit Namensfilter und zwei geöffneten Tabs](docs/screenshots/navigation-de.png)
 
-## Version 29 installieren
+## Version 30 installieren
 
-Öffne die DMG-Datei, kopiere **My Explorer** in den Ordner **Programme**, wirf das Image aus und öffne die App. Diese Version ist mit einem Apple-Development-Zertifikat signiert und wurde von Apple nicht notarisiert. [Für Mac herunterladen](https://github.com/leoars/my-explorer/releases/latest)
+Öffne die DMG-Datei, kopiere **My Explorer** in den Ordner **Programme**, wirf das Image aus und öffne die App. Diese Version ist mit Developer ID signiert und von Apple notarisiert. [Für Mac herunterladen](https://github.com/leoars/my-explorer/releases/latest)
 
-In Version 29 öffnet sich ein Ordner beim Ziehen von Dateien über den Ordnerbaum erst, wenn der Zeiger eine Sekunde darauf ruht; die Ordner auf dem Weg bleiben geschlossen. In der Adressleiste markiert der erste Klick die gesamte Adresse, der zweite setzt den Cursor, und **Esc** stellt die aktuelle Adresse wieder her. Die Verbindung zu KI-Assistenten befindet sich jetzt unter **Optionen → Integrationen**, und die App hat ein neues Symbol.
+Version 30 ist die erste, die mit Developer ID signiert und von Apple notarisiert ist; macOS öffnet sie daher ohne den zusätzlichen Sicherheitsschritt. Nachdem du die App einmal geöffnet hast, erscheint ihr Symbol im Finder ohne den grauen Rahmen. Wenn du von einer früheren Version aktualisierst, fragt macOS möglicherweise erneut nach den Datenschutzberechtigungen und nach dem Zugriff auf die Passwörter, die die App im Schlüsselbund gesichert hat.
 
 ## Kompilieren und installieren
 
