@@ -51,7 +51,7 @@ struct MCPSession {
             return result(id, .object([
                 "protocolVersion": .string("2025-11-25"),
                 "capabilities": .object(["tools": .object(["listChanged": .bool(false)])]),
-                "serverInfo": .object(["name": .string("myexplorer"), "version": .string("0.1.0")]),
+                "serverInfo": .object(["name": .string("myexplorer"), "version": .string("0.1.1")]),
                 "instructions": .string("My Explorer must be running with automation enabled. Access is bounded by the configured grant. Prepare and inspect plans before starting mutations; enter cloud credentials only in the app.")
             ]))
         }

@@ -6,11 +6,11 @@ My Explorer is a native macOS file manager. Its folder tree, tabs and Details vi
 
 ![English file list filtered by name, with two tabs open](docs/screenshots/navigation-en.png)
 
-## Install version 28
+## Install version 29
 
-Open the DMG, copy **My Explorer** to **Applications**, eject the disk image and open the app. This release is signed with an Apple Development certificate and has not been notarized by Apple. [Download for Mac](https://github.com/leoars/my-explorer/releases/tag/v0.1.0)
+Open the DMG, copy **My Explorer** to **Applications**, eject the disk image and open the app. This release is signed with an Apple Development certificate and has not been notarized by Apple. [Download for Mac](https://github.com/leoars/my-explorer/releases/latest)
 
-In version 28 you can import an S3 credentials CSV, choose a bucket, create folders and move files between folders by dragging or by cutting and pasting. If you delete a file from S3 in My Explorer, use **⌘Z** or **Ctrl+Z** during the same session to restore it.
+In version 29, dragging files over the folder tree opens a folder only after you pause on it for a second, so the folders along the way stay closed. In the address bar, the first click selects the whole address, a second click places the cursor and **Esc** restores the current address. The AI assistant connection moved to **Options → Integrations**, and the app has a new icon.
 
 ## Build and install
 
@@ -75,7 +75,7 @@ In **Options**, you can enable update checks at startup. When an update is avail
 
 ## Local automation
 
-To use the CLI or an MCP client, open **View → AI access**, enable automation and grant access to the folder and operations you need. The grant expires after 24 hours. Keep My Explorer open and import the generated `mcp.json` configuration into your client.
+To use the CLI or an MCP client, open **Options → Integrations → Connect an AI assistant**, enable automation and grant access to the folder and operations you need. The grant expires after 24 hours. Keep My Explorer open and import the generated `mcp.json` configuration into your client.
 
 ## Test and contribute
 

@@ -91,10 +91,6 @@ final class AddressSuggestions: NSObject {
 
     func handle(_ command: Selector, editor: NSTextView, complete: (String) -> Void) -> Bool {
         guard !editor.hasMarkedText() else { dismiss(); return false }
-        if command == #selector(NSResponder.cancelOperation(_:)), panel != nil || task != nil {
-            dismiss()
-            return true
-        }
         guard !choices.isEmpty, draft == editor.string, Self.atEnd(editor) else { dismiss(); return false }
         switch command {
         case #selector(NSResponder.moveDown(_:)), #selector(NSResponder.moveUp(_:)):

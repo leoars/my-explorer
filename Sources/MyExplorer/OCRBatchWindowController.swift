@@ -184,7 +184,7 @@ final class OCRBatchWindowController: DialogWindowController, NSTableViewDataSou
         if let item = languagePicker.itemArray.first(where: { $0.representedObject as? String == selected }), selected != nil { languagePicker.select(item) }
     }
     func reloadAppearance() {
-        window?.title = L10n.text("ocr.batch.title")
+        window?.title = L10n.text(sources.count == 1 ? "ocr.create_pdf" : "ocr.batch.title")
         for (button, key) in [(chooseButton, "ocr.batch.choose"), (startButton, "ocr.batch.start"), (cancelButton, "dialog.cancel")] {
             button.title = L10n.text(key); button.font = ExplorerStyle.font(.bars)
         }

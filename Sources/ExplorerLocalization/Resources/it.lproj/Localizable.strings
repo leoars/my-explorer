@@ -180,7 +180,7 @@
 "cloud.conflict.merge" = "Unisci cartelle";
 
 /* Local automation access and deletion */
-"automation.title" = "Accesso IA";
+"automation.title" = "Collega un assistente IA";
 "automation.enabled" = "Consenti automazione locale";
 "automation.client" = "Nome del client";
 "automation.local_root" = "Cartella locale autorizzata";
@@ -538,3 +538,7 @@
 "s3.move.copy_unconfirmed" = "S3 non ha confermato la copia. Il file originale è stato conservato.";
 "s3.move.source_retained" = "Il file è stato copiato. L’originale è ancora nella cartella di origine.";
 "s3.move.delete_unconfirmed" = "Il file è stato copiato. Aggiorna la cartella di origine per verificare se l’originale è stato rimosso.";
+"options.general" = "Generali";
+"options.integrations" = "Integrazioni";
+"ocr.create_pdf" = "Crea PDF ricercabile…";
+"ocr.create_pdfs" = "Crea PDF ricercabili…";

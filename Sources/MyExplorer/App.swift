@@ -33,6 +33,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let arguments = ProcessInfo.processInfo.arguments
+        // macOS frames free-form icons in a grey plate; drawing the Dock tile ourselves keeps the
+        // artwork edge to edge with a transparent background.
+        if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"), let icon = NSImage(contentsOf: url) {
+            let tile = NSImageView(image: icon)
+            tile.imageScaling = .scaleProportionallyUpOrDown
+            NSApp.dockTile.contentView = tile
+            NSApp.dockTile.display()
+        }
         let smoke = arguments.contains("--smoke-test")
         automationHost = arguments.contains("--automation-host") && !smoke
         if smoke {
@@ -323,7 +331,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let decrease = viewMenu.addItem(withTitle: L10n.text("font.decrease"), action: #selector(decreaseFonts), keyEquivalent: "-")
         decrease.target = self; decrease.keyEquivalentModifierMask = .control
         viewMenu.addItem(withTitle: L10n.text("cloud.manage"), action: #selector(showCloudSettings), keyEquivalent: "").target = self
-        viewMenu.addItem(withTitle: L10n.text("automation.title"), action: #selector(showAutomationSettings), keyEquivalent: "").target = self
         view.submenu = viewMenu; main.addItem(view)
         let navigation = NSMenuItem(title: L10n.text("menu.navigate"), action: nil, keyEquivalent: ""); main.addItem(navigation)
         let navMenu = NSMenu(title: L10n.text("menu.navigate")); navigation.submenu = navMenu
@@ -358,7 +365,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         else if NSApp.keyWindow === controller?.window, controller?.acceptsFileListCommands == true { controller?.cutFiles(sender) }
     }
     @objc private func copy(_ sender: Any?) {
-        if let editor = NSApp.keyWindow?.firstResponder as? NSTextView { editor.copy(sender) }
+        if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
+            if let controller, editor === controller.address.currentEditor(), !editor.hasMarkedText() {
+                controller.copyAddressText(editor)
+            } else {
+                editor.copy(sender)
+            }
+        }
         else if NSApp.keyWindow === controller?.window, controller?.acceptsFileListCommands == true { controller?.copyFiles(sender) }
     }
     @objc private func paste(_ sender: Any?) {
@@ -388,6 +401,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             let settings = OptionsSettingsController(preferences: startupPreferences, sessionPreferences: sessionPreferences, updater: updater)
             settings.onChange = { [weak self] in self?.saveSession() }
             settings.onMasterPassword = { [weak self] in self?.secureFolders.configureMaster(nil) }
+            settings.onConnectAssistant = { [weak self] in self?.showAutomationSettings(nil) }
             settings.onShowFonts = { [weak self] in self?.showFontSettings(nil) }
             optionsSettings = settings
         }
@@ -567,6 +581,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             #selector(cut(_:)): #selector(ExplorerWindowController.cutFiles(_:)), #selector(paste(_:)): #selector(ExplorerWindowController.pasteFiles(_:))]
         if let action = menuItem.action, let forwarded = fileActions[action] {
             if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
+                if action == #selector(copy(_:)), editor === controller?.address.currentEditor(), !editor.hasMarkedText() {
+                    return !editor.string.isEmpty
+                }
                 return action == #selector(copy(_:)) ? editor.selectedRange().length > 0 : editor.isEditable
             }
             guard let controller, NSApp.keyWindow === controller.window, controller.acceptsFileListCommands else { return false }
@@ -726,7 +743,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 }
                 if arguments.contains("--address-completion-smoke") {
                     try await testAddressCompletion(root: root, browser: controller)
-                    print("SMOKE PASS: address completion, keyboard navigation, cancellation and focus")
+                    print("SMOKE PASS: address text select all/copy/cut/paste with Control and Command, completion, keyboard navigation, cancellation and focus")
                     NSApp.terminate(nil)
                     return
                 }
@@ -1347,6 +1364,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     // Allow language discovery (15 seconds), recognition, and delivery to the UI.
     private var ocrSmokeTimeout: Duration { .seconds(OCRLimits().timeoutSeconds + 20) }
 
+    private func testOCRToolbar(_ browser: ExplorerWindowController, image: URL, pdf: URL) async throws {
+        let originalDirectory = browser.session.history.current.url
+        browser.navigate(.visit(image.deletingLastPathComponent()))
+        try await waitForListing(browser)
+        guard let content = browser.window?.contentView else { throw SmokeFailure.failed("Missing Explorer window") }
+        func visibleButton(_ id: String) -> NSButton? {
+            descendants(of: content).compactMap { $0 as? NSButton }.first {
+                $0.accessibilityIdentifier() == id && !$0.isHiddenOrHasHiddenAncestor
+            }
+        }
+        let extractID = "explorer.toolbar.extractText", pdfID = "explorer.toolbar.searchablePDF"
+        browser.table.deselectAll(nil)
+        guard visibleButton(extractID) == nil, visibleButton(pdfID) == nil else {
+            throw SmokeFailure.failed("Document actions visible without a selection")
+        }
+        func row(for source: URL) throws -> Int {
+            let stem = source.deletingPathExtension().lastPathComponent
+            guard let row = (0..<browser.table.numberOfRows).first(where: {
+                let title = browser.tableView(browser.table, typeSelectStringFor: nil, row: $0)
+                return title == source.lastPathComponent || title == stem
+            }) else { throw SmokeFailure.failed("Missing toolbar fixture: \(source.lastPathComponent)") }
+            return row
+        }
+        let imageRow = try row(for: image), pdfRow = try row(for: pdf)
+        let originalExtract = browser.onExtractText, originalBatch = browser.onBatchOCR
+        defer { browser.onExtractText = originalExtract; browser.onBatchOCR = originalBatch }
+        var extracted: URL?, pdfSources: [URL] = []
+        browser.onExtractText = { extracted = $0 }
+        browser.onBatchOCR = { pdfSources = $0 }
+        browser.table.selectRowIndexes(IndexSet(integer: imageRow), byExtendingSelection: false)
+        guard let extract = visibleButton(extractID), extract.isEnabled,
+              let singlePDF = visibleButton(pdfID), singlePDF.isEnabled else {
+            throw SmokeFailure.failed("Missing OCR toolbar actions for an image")
+        }
+        extract.performClick(nil)
+        singlePDF.performClick(nil)
+        guard extracted?.standardizedFileURL == image.standardizedFileURL,
+              pdfSources.map(\.standardizedFileURL) == [image.standardizedFileURL] else {
+            throw SmokeFailure.failed("Single-file OCR toolbar action used the wrong selection")
+        }
+        browser.table.selectRowIndexes(IndexSet([imageRow, pdfRow]), byExtendingSelection: false)
+        guard visibleButton(extractID) == nil, let multiplePDF = visibleButton(pdfID), multiplePDF.isEnabled else {
+            throw SmokeFailure.failed("Incorrect OCR toolbar for a multiple selection")
+        }
+        multiplePDF.performClick(nil)
+        guard Set(pdfSources.map(\.standardizedFileURL)) == Set([image.standardizedFileURL, pdf.standardizedFileURL]) else {
+            throw SmokeFailure.failed("PDF toolbar action did not receive both selected documents")
+        }
+        browser.navigate(.visit(originalDirectory))
+        try await waitForListing(browser)
+    }
+
     private func testOCR(root: URL, arguments: [String]) async throws {
         let folder = root.appendingPathComponent("OCRSmoke", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
@@ -1363,6 +1432,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         try await waitForCondition("OCR language retry remains explicit") { !unavailableLanguages.isRunning }
         unavailableLanguages.close()
         guard let browser = controller else { throw SmokeFailure.failed("Missing OCR browser") }
+        try await testOCRToolbar(browser, image: image, pdf: pdf)
         let entry = FileEntry(url: image, name: image.lastPathComponent, isDirectory: false)
         let menu = browser.table.menu!
         browser.rebuildContextMenu(menu, entries: [entry])
@@ -1577,7 +1647,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let grant = AutomationGrant(name: "Fixture client", token: token, expires: Date().addingTimeInterval(60), operations: ["read", "copy", "preferences"], localRoots: [canonical.path], cloudScopes: [], recursive: true)
         try await service.grant(grant); try await service.setEnabled(true)
         for language: AppLanguage in [.english, .german, .japanese, .portuguese] {
-            changeLanguage(language); showAutomationSettings(nil)
+            changeLanguage(language)
+            guard let menu = NSApp.mainMenu?.item(withTitle: L10n.text("menu.view"))?.submenu,
+                  menu.item(withTitle: L10n.text("automation.title")) == nil,
+                  let options = menu.item(withTitle: L10n.text("options.title")), let action = options.action,
+                  NSApp.sendAction(action, to: options.target, from: options),
+                  let optionsContent = optionsSettings?.window?.contentView,
+                  let tabs = descendants(of: optionsContent).compactMap({ $0 as? NSTabView }).first,
+                  let integrations = tabs.tabViewItems.first(where: { $0.label == L10n.text("options.integrations") }) else {
+                throw SmokeFailure.failed("Missing Options → Integrations path")
+            }
+            tabs.selectTabViewItem(integrations)
+            guard let page = integrations.view,
+                  let connect = descendants(of: page).first(where: { $0.accessibilityIdentifier() == "options.connectAssistant" }) as? NSButton,
+                  connect.isEnabled, !connect.isHiddenOrHasHiddenAncestor, connect.title == L10n.text("automation.title") else {
+                throw SmokeFailure.failed("Missing connect assistant action in the selected tab")
+            }
+            connect.performClick(nil)
             guard let window = automationSettings?.window, let content = window.contentView,
                   window.title == L10n.text("automation.title"),
                   let create = descendants(of: content).first(where: { $0.accessibilityIdentifier() == "automation.create" }) as? NSButton,
@@ -1608,6 +1694,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
         }
         automationSettings?.close(); automationSettings = nil
+        optionsSettings?.close()
         let config = area.appendingPathComponent("client.json"), tokenFile = area.appendingPathComponent("token")
         try Data(token.utf8).write(to: tokenFile)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenFile.path)
@@ -2031,8 +2118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         guard rebuilt.session.history.current.url.path == root.path else { throw SmokeFailure.failed("Cloud smoke changed local navigation") }
     }
 
-    private func testCloudClipboard(root: URL, connection: CloudConnection, transport: SmokeCloudListingTransport) async throws {
-        let pasteboard = NSPasteboard.general
+    private func preserveClipboard(_ pasteboard: NSPasteboard) throws -> () -> Void {
         // Materialize every type from every item before replacing anything, including custom formats.
         let previous: [[(NSPasteboard.PasteboardType, Data)]] = try (pasteboard.pasteboardItems ?? []).map { item in
             try item.types.map { type in
@@ -2040,7 +2126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 return (type, data)
             }
         }
-        defer {
+        return {
             pasteboard.clearContents()
             let restored = previous.map { values in
                 let item = NSPasteboardItem()
@@ -2049,6 +2135,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
             if !restored.isEmpty { pasteboard.writeObjects(restored) }
         }
+    }
+
+    private func testCloudClipboard(root: URL, connection: CloudConnection, transport: SmokeCloudListingTransport) async throws {
+        let pasteboard = NSPasteboard.general
+        let restore = try preserveClipboard(pasteboard)
+        defer { restore() }
         let source = root.appendingPathComponent("Cloud-smoke-upload.txt")
         let destination = root.appendingPathComponent("Cloud-smoke-download")
         let payload = Data("Cloud smoke Unicode 日本語".utf8)
@@ -3536,7 +3628,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         trashWindow.close()
     }
 
+    private func testAddressClipboard(_ browser: ExplorerWindowController) async throws {
+        let table = browser.table
+        guard let row = (0..<table.numberOfRows).first(where: {
+            let name = browser.tableView(table, typeSelectStringFor: nil, row: $0)
+            return name == "Notes.txt" || name == "Notes"
+        }) else { throw SmokeFailure.failed("Missing selected file for address clipboard test") }
+        browser.window?.makeKeyAndOrderFront(nil)
+        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        guard let window = browser.window else { throw SmokeFailure.failed("Missing browser window") }
+        window.makeFirstResponder(table)
+        let point = browser.address.convert(NSPoint(x: 14, y: browser.address.bounds.midY), to: nil)
+        func clickAddress(count: Int = 1) throws {
+            func event(_ type: NSEvent.EventType) throws -> NSEvent {
+                guard let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: 1, clickCount: count, pressure: 1) else { throw SmokeFailure.failed("Address click event") }
+                return event
+            }
+            NSApp.postEvent(try event(.leftMouseUp), atStart: true)
+            window.sendEvent(try event(.leftMouseDown))
+        }
+        try clickAddress()
+        guard let editor = browser.address.currentEditor() as? NSTextView, browser.window?.firstResponder === editor else {
+            throw SmokeFailure.failed("Address did not receive text focus")
+        }
+        guard !editor.string.isEmpty, editor.selectedRange() == NSRange(location: 0, length: (editor.string as NSString).length) else {
+            throw SmokeFailure.failed("First click did not select the address")
+        }
+        try clickAddress(count: 2)
+        guard editor.selectedRange().length == 0 else { throw SmokeFailure.failed("Second click did not place the caret") }
+        let board = NSPasteboard.general
+        let restore = try preserveClipboard(board)
+        defer { restore() }
+        let path = editor.string
+        for flags: NSEvent.ModifierFlags in [.control, .command] {
+            editor.string = path
+            let text = path as NSString
+            let cursor = NSRange(location: text.length, length: 0)
+            editor.setSelectedRange(cursor)
+            board.clearContents()
+            try sendKey("c", code: 8, flags: flags, to: browser)
+            guard board.string(forType: .string) == path, editor.selectedRange() == cursor else {
+                throw SmokeFailure.failed("Address copy at insertion point failed for \(flags)")
+            }
+            let fullRange = NSRange(location: 0, length: text.length)
+            editor.setSelectedRange(NSRange(location: text.length / 2, length: 0))
+            try sendKey("a", code: 0, flags: flags, to: browser)
+            guard editor.selectedRange() == fullRange, browser.window?.firstResponder === editor,
+                  table.selectedRowIndexes == IndexSet(integer: row) else {
+                throw SmokeFailure.failed("Address select all failed for \(flags)")
+            }
+            let selection = flags == .control ? fullRange : text.range(of: text.lastPathComponent, options: .backwards)
+            guard selection.location != NSNotFound, selection.length > 0 else { throw SmokeFailure.failed("Missing address text") }
+            editor.setSelectedRange(selection)
+            board.clearContents()
+            try sendKey("c", code: 8, flags: flags, to: browser)
+            guard board.string(forType: .string) == text.substring(with: selection),
+                  editor.string == path else { throw SmokeFailure.failed("Address copy failed for \(flags)") }
+            board.clearContents()
+            try sendKey("x", code: 7, flags: flags, to: browser)
+            let cutText = text.substring(with: selection)
+            guard board.string(forType: .string) == cutText,
+                  editor.string == text.replacingCharacters(in: selection, with: ""),
+                  table.selectedRowIndexes == IndexSet(integer: row) else {
+                throw SmokeFailure.failed("Address cut failed for \(flags)")
+            }
+            let changeCount = board.changeCount
+            try sendKey("x", code: 7, flags: flags, to: browser)
+            guard board.changeCount == changeCount else { throw SmokeFailure.failed("Empty cut changed clipboard") }
+            try sendKey("v", code: 9, flags: flags, to: browser)
+            try await waitForCondition("paste cut address back") { editor.string == path }
+            editor.setSelectedRange(selection)
+            let replacement = "Pasta Açúcar 日本語"
+            board.clearContents()
+            board.setString(replacement, forType: .string)
+            try sendKey("v", code: 9, flags: flags, to: browser)
+            let expected = text.replacingCharacters(in: selection, with: replacement)
+            try await waitForCondition("address editor to finish pasting") { editor.string == expected }
+            guard table.selectedRowIndexes == IndexSet(integer: row), !FileCommands.shared.isBusy else {
+                throw SmokeFailure.failed("Address paste affected the file list for \(flags)")
+            }
+        }
+        editor.string = path
+    }
+
     private func testAddressCompletion(root: URL, browser: ExplorerWindowController) async throws {
+        try await testAddressClipboard(browser)
         browser.focusAddress(nil)
         guard let editor = browser.address.currentEditor() as? NSTextView else {
             throw SmokeFailure.failed("Address editor missing")
@@ -3544,16 +3722,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         func type(_ value: String) {
             editor.insertText(value, replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
         }
+        let currentAddress = CloudAccounts.shared.address(for: browser.session.history.current.url)
+        func checkEscape(_ expected: String) throws {
+            let location = browser.session.history.current.url
+            try sendKey("\u{1b}", code: 53, flags: [], to: browser)
+            guard !browser.addressSuggestions.isVisible, editor.string == expected,
+                  browser.address.stringValue == expected, browser.window?.firstResponder === editor,
+                  browser.session.history.current.url == location else {
+                throw SmokeFailure.failed("Escape did not restore the current address in place")
+            }
+        }
+        type("")
+        try checkEscape(currentAddress)
         type("Down")
+        try checkEscape(currentAddress)
         type("Doc")
         try await waitForCondition("address suggestions") { browser.addressSuggestions.isVisible }
         try sendKey("\t", code: 48, flags: [], to: browser)
         guard editor.string == "Documents/" else { throw SmokeFailure.failed("Tab completed the wrong path") }
         try await waitForCondition("nested suggestions") { browser.addressSuggestions.isVisible }
-        try sendKey("\u{1b}", code: 53, flags: [], to: browser)
-        guard !browser.addressSuggestions.isVisible, editor.string == "Documents/" else {
-            throw SmokeFailure.failed("Escape changed the address")
-        }
+        try checkEscape(currentAddress)
         type("Documents/Pr")
         try await waitForCondition("nested prefix") { browser.addressSuggestions.isVisible }
         try sendKey("\u{f701}", code: 125, flags: [], to: browser)
@@ -3562,6 +3750,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         guard browser.session.history.current.url.explorerIdentity == root.appendingPathComponent("Documents/Projects").explorerIdentity,
               !browser.addressSuggestions.isVisible else { throw SmokeFailure.failed("Enter did not open the selected folder") }
         browser.focusAddress(nil)
+        type("../../Do")
+        try checkEscape(CloudAccounts.shared.address(for: browser.session.history.current.url))
         type("../../Do")
         browser.window?.makeFirstResponder(browser.table)
         try await Task.sleep(for: .milliseconds(300))

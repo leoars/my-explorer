@@ -6,11 +6,11 @@ My Explorer è un gestore di file nativo per macOS. Unisce l’albero delle cart
 
 ![Elenco in italiano filtrato per nome, con due schede aperte](docs/screenshots/navigation-it.png)
 
-## Installare la versione 28
+## Installare la versione 29
 
-Apri il DMG, copia **My Explorer** in **Applicazioni**, espelli l’immagine disco e apri l’app. Questa versione è firmata con un certificato Apple Development e non è stata autenticata da Apple tramite notarizzazione. [Scarica per Mac](https://github.com/leoars/my-explorer/releases/tag/v0.1.0)
+Apri il DMG, copia **My Explorer** in **Applicazioni**, espelli l’immagine disco e apri l’app. Questa versione è firmata con un certificato Apple Development e non è stata autenticata da Apple tramite notarizzazione. [Scarica per Mac](https://github.com/leoars/my-explorer/releases/latest)
 
-Nella versione 28 puoi importare le credenziali S3 da un file CSV, scegliere un bucket, creare cartelle e spostare i file da una cartella all’altra trascinandoli o con **Taglia** e **Incolla**. Se elimini un file da S3 con My Explorer, puoi ripristinarlo con **⌘Z** o **Ctrl+Z** durante la stessa sessione.
+Nella versione 29, quando trascini i file sull’albero delle cartelle, una cartella si apre solo dopo che il puntatore vi resta fermo per un secondo; le cartelle lungo il percorso restano chiuse. Nella barra degli indirizzi, il primo clic seleziona l’intero indirizzo, il secondo posiziona il cursore ed **Esc** ripristina l’indirizzo corrente. Il collegamento agli assistenti IA si trova ora in **Opzioni → Integrazioni** e l’app ha una nuova icona.
 
 ## Compilare e installare
 
@@ -75,7 +75,7 @@ Nelle opzioni puoi abilitare la verifica all’avvio. Puoi aggiornare subito, ri
 
 ## Automazione locale
 
-Per usare la CLI o un client MCP, apri l’accesso IA dal menu Vista, attiva l’automazione e autorizza le operazioni necessarie su una cartella. Il permesso scade dopo 24 ore. Tieni aperta l’app e importa nel client la configurazione generata in `mcp.json`.
+Per usare la CLI o un client MCP, apri **Opzioni → Integrazioni → Collega un assistente IA**, attiva l’automazione e autorizza le operazioni necessarie su una cartella. Il permesso scade dopo 24 ore. Tieni aperta l’app e importa nel client la configurazione generata in `mcp.json`.
 
 ## Test e contributi
 

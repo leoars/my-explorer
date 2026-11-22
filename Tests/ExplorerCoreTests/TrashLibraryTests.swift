@@ -88,6 +88,20 @@ struct TrashLibraryTests {
         #expect(try Data(contentsOf: f.origin.appendingPathComponent("finder-item")) == Data([2]))
     }
 
+    @Test func erasingDirectoryPreservesTargetOfNestedLink() async throws {
+        let f = try Fixture(); defer { try? f.fm.removeItem(at: f.root) }
+        let nested = f.trash.appendingPathComponent("discard/nested")
+        try f.fm.createDirectory(at: nested, withIntermediateDirectories: true)
+        let original = f.origin.appendingPathComponent("keep.txt")
+        try Data([42]).write(to: original)
+        try f.fm.createSymbolicLink(at: nested.appendingPathComponent("link"), withDestinationURL: f.origin)
+        let library = f.library
+        let entry = try #require(try await library.inventory().entries.first { $0.name == "discard" })
+        try await library.erase(entry)
+        #expect(!f.fm.fileExists(atPath: entry.location.path))
+        #expect(try Data(contentsOf: original) == Data([42]))
+    }
+
     @Test func replacementAndDisconnectedVolumeNeverModifyAnotherItem() async throws {
         let f = try Fixture(); defer { try? f.fm.removeItem(at: f.root) }
         _ = try await f.trashFile(named: "same.txt")

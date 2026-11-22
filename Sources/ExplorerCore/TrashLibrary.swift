@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 import Darwin
+import CRemovefile
 import CryptoKit
 
 public struct TrashEntry: Sendable {
@@ -167,7 +168,7 @@ public actor TrashLibrary {
             throw LocalTransferFailure(.changed)
         }
         // Recursive mode never follows symbolic links or crosses mount points without an explicit flag.
-        guard removefileat(parent, name, nil, removefile_flags_t(REMOVEFILE_RECURSIVE)) == 0 else {
+        guard explorer_remove_tree_at(parent, name) == 0 else {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
         try? FileManager.default.removeItem(at: receiptFile(entry.location))

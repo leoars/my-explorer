@@ -6,11 +6,11 @@ My Explorer ist ein nativer Dateimanager für macOS. Ordnerbaum, Tabs und Detail
 
 ![Deutsche Dateiliste mit Namensfilter und zwei geöffneten Tabs](docs/screenshots/navigation-de.png)
 
-## Version 28 installieren
+## Version 29 installieren
 
-Öffne die DMG-Datei, kopiere **My Explorer** in den Ordner **Programme**, wirf das Image aus und öffne die App. Diese Version ist mit einem Apple-Development-Zertifikat signiert und wurde von Apple nicht notarisiert. [Für Mac herunterladen](https://github.com/leoars/my-explorer/releases/tag/v0.1.0)
+Öffne die DMG-Datei, kopiere **My Explorer** in den Ordner **Programme**, wirf das Image aus und öffne die App. Diese Version ist mit einem Apple-Development-Zertifikat signiert und wurde von Apple nicht notarisiert. [Für Mac herunterladen](https://github.com/leoars/my-explorer/releases/latest)
 
-In Version 28 kannst du S3-Zugangsdaten aus einer CSV-Datei importieren, einen Bucket auswählen, Ordner erstellen und Dateien per Drag-and-drop oder durch Ausschneiden und Einfügen zwischen Ordnern verschieben. Wenn du in My Explorer eine Datei aus S3 löschst, kannst du sie in derselben Sitzung mit **⌘Z** oder **Strg+Z** wiederherstellen.
+In Version 29 öffnet sich ein Ordner beim Ziehen von Dateien über den Ordnerbaum erst, wenn der Zeiger eine Sekunde darauf ruht; die Ordner auf dem Weg bleiben geschlossen. In der Adressleiste markiert der erste Klick die gesamte Adresse, der zweite setzt den Cursor, und **Esc** stellt die aktuelle Adresse wieder her. Die Verbindung zu KI-Assistenten befindet sich jetzt unter **Optionen → Integrationen**, und die App hat ein neues Symbol.
 
 ## Kompilieren und installieren
 
@@ -75,7 +75,7 @@ In den Optionen können Sie beim Start nach Updates suchen lassen. Sie können s
 
 ## Lokale Automatisierung
 
-Für die CLI oder einen MCP-Client öffnest du den KI-Zugriff im Ansichtsmenü, aktivierst die Automatisierung und erlaubst die benötigten Aktionen für einen Ordner. Der Zugriff läuft nach 24 Stunden ab. Lass die App geöffnet und importiere die erzeugte Konfiguration aus `mcp.json` in deinen Client.
+Für die CLI oder einen MCP-Client öffnest du **Optionen → Integrationen → KI-Assistenten verbinden**, aktivierst die Automatisierung und erlaubst die benötigten Aktionen für einen Ordner. Der Zugriff läuft nach 24 Stunden ab. Lass die App geöffnet und importiere die erzeugte Konfiguration aus `mcp.json` in deinen Client.
 
 ## Testen und mitwirken
 

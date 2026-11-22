@@ -6,11 +6,11 @@ My Explorer est un gestionnaire de fichiers natif pour macOS. Il associe l’arb
 
 ![Liste filtrée par nom dans l’interface française, avec deux onglets ouverts](docs/screenshots/navigation-fr.png)
 
-## Installer la version 28
+## Installer la version 29
 
-Ouvrez le DMG, copiez **My Explorer** dans **Applications**, éjectez l’image disque et ouvrez l’application. Cette version est signée avec un certificat Apple Development et n’a pas été notariée par Apple. [Télécharger pour Mac](https://github.com/leoars/my-explorer/releases/tag/v0.1.0)
+Ouvrez le DMG, copiez **My Explorer** dans **Applications**, éjectez l’image disque et ouvrez l’application. Cette version est signée avec un certificat Apple Development et n’a pas été notariée par Apple. [Télécharger pour Mac](https://github.com/leoars/my-explorer/releases/latest)
 
-Dans la version 28, vous pouvez importer vos identifiants S3 depuis un fichier CSV, choisir un compartiment, créer des dossiers et déplacer des fichiers d’un dossier à l’autre par glisser-déposer ou par couper-coller. Si vous supprimez un fichier de S3 depuis My Explorer, utilisez **⌘Z** ou **Ctrl+Z** pendant la même session pour le restaurer.
+Dans la version 29, lorsque vous faites glisser des fichiers sur l’arborescence, un dossier ne s’ouvre qu’après une seconde de survol ; les dossiers traversés restent fermés. Dans la barre d’adresse, le premier clic sélectionne l’adresse entière, le deuxième place le curseur et **Échap** rétablit l’adresse actuelle. La connexion aux assistants IA se trouve désormais dans **Options → Intégrations**, et l’application a une nouvelle icône.
 
 ## Compiler et installer
 
@@ -75,7 +75,7 @@ Dans les options, vous pouvez rechercher les mises à jour au démarrage. Vous p
 
 ## Automatisation locale
 
-Pour utiliser la ligne de commande ou un client MCP, ouvrez l’accès IA dans le menu de présentation, activez l’automatisation et autorisez les opérations voulues sur un dossier. Cet accès expire après 24 heures. Gardez l’application ouverte et importez la configuration `mcp.json` dans le client.
+Pour utiliser la ligne de commande ou un client MCP, ouvrez **Options → Intégrations → Connecter un assistant IA**, activez l’automatisation et autorisez les opérations voulues sur un dossier. Cet accès expire après 24 heures. Gardez l’application ouverte et importez la configuration `mcp.json` dans le client.
 
 ## Tester et contribuer
 

@@ -6,6 +6,28 @@ import ExplorerClipboard
 @MainActor
 final class FolderOutlineView: NSOutlineView {
     var contextMenuForRow: ((Int) -> NSMenu?)?
+    var onDragEnded: (() -> Void)?
+    private var dragInside = false { didSet { if oldValue && !dragInside { onDragEnded?() } } }
+    /// True only while a drag hovers the tree with the button still held, so a missed
+    /// end-of-drag event can never leave manual expansion blocked.
+    var dragActive: Bool { dragInside && NSEvent.pressedMouseButtons != 0 }
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        dragInside = true
+        return super.draggingEntered(sender)
+    }
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        dragInside = false
+        super.draggingExited(sender)
+    }
+    override func draggingEnded(_ sender: any NSDraggingInfo) {
+        dragInside = false
+        super.draggingEnded(sender)
+    }
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        dragInside = false
+        return super.performDragOperation(sender)
+    }
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
@@ -79,6 +101,11 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
     private var hidden = false
     private var generation = 0
     private var selecting = false
+    /// Hover time over one folder before a drag expands it; AppKit's own spring-loading is far too eager.
+    static let dragExpandDelay: TimeInterval = 1.0
+    private var dragHoverNode: FolderNode?
+    private var dragHoverTimer: Timer?
+    private var dragExpansionAllowed = false
     private var gitSnapshot: GitStatusSnapshot?
     private var gitRoots: Set<String> = []
     func updateGit(snapshot: GitStatusSnapshot?, roots: Set<String>) {
@@ -105,6 +132,7 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         roots.append(trashRoot)
         super.init()
         outline.contextMenuForRow = { [weak self] row in self?.contextMenu(for: row) }
+        outline.onDragEnded = { [weak self] in self?.cancelDragHover() }
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("folders"))
         outline.addTableColumn(column)
         outline.outlineTableColumn = column
@@ -141,7 +169,7 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         }
         selecting = true
         outline.reloadItem(searchRoot, reloadChildren: true)
-        if searchRoot.children?.isEmpty == false { outline.expandItem(searchRoot) }
+        if searchRoot.children?.isEmpty == false { expandFromCode { outline.expandItem(searchRoot) } }
         selecting = false
     }
 
@@ -207,7 +235,7 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         }
         selecting = true
         outline.reloadItem(cloudRoot, reloadChildren: true)
-        if !(cloudRoot.children?.isEmpty ?? true) { outline.expandItem(cloudRoot) }
+        if !(cloudRoot.children?.isEmpty ?? true) { expandFromCode { outline.expandItem(cloudRoot) } }
         selecting = false
     }
 
@@ -263,6 +291,7 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
     }
     func outlineView(_ outlineView: NSOutlineView, validateDrop info: any NSDraggingInfo, proposedItem item: Any?,
                      proposedChildIndex index: Int) -> NSDragOperation {
+        trackDragHover(info)
         guard let node = item as? FolderNode, !node.isGroup, node.savedSearch == nil else { return [] }
         outlineView.setDropItem(node, dropChildIndex: NSOutlineViewDropOnItemIndex)
         return FileDrop.operation(for: FileDrop.readURLs(from: info), to: node.url,
@@ -275,6 +304,38 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         guard action == .copy || action == .move else { return false }
         FileCommands.shared.transfer(urls, to: node.url, move: action == .move)
         return FileCommands.shared.task != nil
+    }
+
+    private func cancelDragHover() {
+        dragHoverTimer?.invalidate()
+        dragHoverTimer = nil
+        dragHoverNode = nil
+    }
+
+    /// Expands a folder only after the drag rests on that same row for `dragExpandDelay`.
+    private func trackDragHover(_ info: any NSDraggingInfo) {
+        let row = outline.row(at: outline.convert(info.draggingLocation, from: nil))
+        let node = row >= 0 ? outline.item(atRow: row) as? FolderNode : nil
+        guard node !== dragHoverNode else { return }
+        cancelDragHover()
+        dragHoverNode = node
+        guard let node, outline.isExpandable(node), !outline.isItemExpanded(node) else { return }
+        let timer = Timer(timeInterval: Self.dragExpandDelay, repeats: false) { [weak self, weak node] _ in
+            MainActor.assumeIsolated {
+                guard let self, let node, self.outline.dragActive, self.dragHoverNode === node else { return }
+                self.dragHoverTimer = nil
+                self.expandFromCode { self.outline.expandItem(node) }
+            }
+        }
+        dragHoverTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func expandFromCode(_ body: () -> Void) {
+        let previous = dragExpansionAllowed
+        dragExpansionAllowed = true
+        body()
+        dragExpansionAllowed = previous
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
@@ -290,6 +351,8 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
 
     func outlineView(_ outlineView: NSOutlineView, shouldExpandItem item: Any) -> Bool {
         guard let node = item as? FolderNode else { return false }
+        // While a drag hovers the tree, only our delayed hover timer (or a pending reload) may expand.
+        if outline.dragActive && !dragExpansionAllowed { return false }
         if node === trashRoot || node === mobileRoot || node.savedSearch != nil || node.volumeLink { return false }
         if node.isGroup { return true }
         if node.children != nil {
@@ -388,12 +451,14 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
                 if expand || !expanded.isEmpty { self.observe(node) }
                 self.selecting = true
                 self.outline.reloadItem(node, reloadChildren: true)
-                if expand { self.outline.expandItem(node) }
-                for item in expanded where item === node || self.outline.row(forItem: item) >= 0 {
-                    self.outline.expandItem(item)
-                    if item.watcher == nil && item.url.isFileURL {
-                        self.observe(item)
-                        self.load(item, expand: false)
+                self.expandFromCode {
+                    if expand { self.outline.expandItem(node) }
+                    for item in expanded where item === node || self.outline.row(forItem: item) >= 0 {
+                        self.outline.expandItem(item)
+                        if item.watcher == nil && item.url.isFileURL {
+                            self.observe(item)
+                            self.load(item, expand: false)
+                        }
                     }
                 }
                 self.selecting = false

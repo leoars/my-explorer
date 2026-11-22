@@ -1,0 +1,4 @@
+module CRemovefile [system] {
+    header "CRemovefile.h"
+    export *
+}

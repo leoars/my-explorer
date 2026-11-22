@@ -12,6 +12,7 @@ final class OptionsSettingsController: DialogWindowController {
     let restoreTabs: NSButton
     var onChange: (() -> Void)?
     var onMasterPassword: (() -> Void)?
+    var onConnectAssistant: (() -> Void)?
     var onShowFonts: (() -> Void)?
     private let preferences: StartupPreferences
     private let sessionPreferences: SessionPreferences
@@ -67,11 +68,38 @@ final class OptionsSettingsController: DialogWindowController {
         let stack = NSStackView(views: [restoreTabs, tabsHelp, restoreFolder, help, confirmDeletion, updateControls, updateStatus, fonts, master])
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 20
         stack.translatesAutoresizingMaskIntoConstraints = false
-        window.contentView?.addSubview(stack)
+        let general = NSTabViewItem(identifier: "general")
+        general.label = L10n.text("options.general")
+        let generalView = NSView()
+        general.view = generalView
+        generalView.addSubview(stack)
+
+        let integrations = NSTabViewItem(identifier: "integrations")
+        integrations.label = L10n.text("options.integrations")
+        let integrationsView = NSView()
+        integrations.view = integrationsView
+        let connect = NSButton(title: L10n.text("automation.title"), target: self, action: #selector(connectAssistant))
+        connect.setAccessibilityIdentifier("options.connectAssistant")
+        connect.translatesAutoresizingMaskIntoConstraints = false
+        integrationsView.addSubview(connect)
+
+        let tabs = NSTabView()
+        tabs.addTabViewItem(general)
+        tabs.addTabViewItem(integrations)
+        tabs.selectTabViewItem(general)
+        tabs.translatesAutoresizingMaskIntoConstraints = false
+        guard let content = window.contentView else { return }
+        content.addSubview(tabs)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -24),
-            stack.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 24),
+            tabs.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            tabs.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+            tabs.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
+            tabs.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12),
+            connect.leadingAnchor.constraint(equalTo: integrationsView.leadingAnchor, constant: 16),
+            connect.topAnchor.constraint(equalTo: integrationsView.topAnchor, constant: 16),
+            stack.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: generalView.trailingAnchor, constant: -16),
+            stack.topAnchor.constraint(equalTo: generalView.topAnchor, constant: 16),
             updateStatus.widthAnchor.constraint(equalTo: stack.widthAnchor),
             help.widthAnchor.constraint(equalTo: stack.widthAnchor),
             tabsHelp.widthAnchor.constraint(equalTo: stack.widthAnchor)
@@ -92,5 +120,6 @@ final class OptionsSettingsController: DialogWindowController {
         onChange?()
     }
     @objc private func configureMaster(_ sender: Any?) { onMasterPassword?() }
+    @objc private func connectAssistant() { onConnectAssistant?() }
     @objc private func showFonts(_ sender: Any?) { onShowFonts?() }
 }

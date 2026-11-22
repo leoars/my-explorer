@@ -5,13 +5,56 @@ import ExplorerLocalization
 import ExplorerClipboard
 import UniformTypeIdentifiers
 
+private final class AddressField: NSTextField {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+private final class ExplorerWindow: NSWindow {
+    weak var addressField: NSTextField?
+    private var selectedAddressOnClick = false
+
+    override func sendEvent(_ event: NSEvent) {
+        guard event.type == .leftMouseDown else {
+            super.sendEvent(event)
+            return
+        }
+        let previousClickSelectedAddress = selectedAddressOnClick
+        selectedAddressOnClick = false
+        guard let field = addressField, field.isEnabled, attachedSheet == nil,
+              event.modifierFlags.intersection([.control, .option, .shift, .command]).isEmpty,
+              field.bounds.contains(field.convert(event.locationInWindow, from: nil)) else {
+            super.sendEvent(event)
+            return
+        }
+        let entering = field.currentEditor() == nil && event.clickCount == 1
+        let placingCaret = previousClickSelectedAddress && event.clickCount == 2
+        guard entering || placingCaret,
+              // Leave drags in the queue so AppKit can track a normal text selection.
+              let next = nextEvent(matching: [.leftMouseDragged, .leftMouseUp], until: .distantFuture,
+                                   inMode: .eventTracking, dequeue: false),
+              next.type == .leftMouseUp, makeFirstResponder(field),
+              let editor = field.currentEditor() as? NSTextView else {
+            super.sendEvent(event)
+            return
+        }
+        _ = nextEvent(matching: .leftMouseUp, until: .distantPast, inMode: .eventTracking, dequeue: true)
+        if entering {
+            editor.selectAll(nil)
+            selectedAddressOnClick = true
+        } else {
+            let point = editor.convert(event.locationInWindow, from: nil)
+            editor.setSelectedRange(NSRange(location: editor.characterIndexForInsertion(at: point), length: 0))
+        }
+    }
+}
+
 @MainActor
 final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSMenuItemValidation, NSMenuDelegate, NSSplitViewDelegate {
     let workspace: ExplorerWorkspace
     var session: DirectorySession { workspace.activeTab!.session }
     let table = ExplorerTableView()
     let fileScroll = NSScrollView()
-    let address = NSTextField()
+    let address: NSTextField = AddressField()
     let addressSuggestions = AddressSuggestions()
     let filter = NSSearchField()
     let breadcrumbs = NSStackView()
@@ -55,6 +98,8 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     private var hiddenButton: NSButton!
     private var openButton: NSButton!
     private var copyButton: NSButton!
+    private let extractButton = OutlinedButton()
+    private let searchablePDFButton = OutlinedButton()
     private var visibleEntries: [FileEntry] = []
     private var inlineRename: (entry: FileEntry, field: NSTextField)?
     private var contextEntries: [FileEntry] = []
@@ -78,7 +123,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         self.sidebarHome = sidebarHome
         tree = existingTree ?? FolderTreeController(home: sidebarHome ?? FileManager.default.homeDirectoryForCurrentUser)
         tree.relocalize()
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1160, height: 740),
+        let window = ExplorerWindow(contentRect: NSRect(x: 0, y: 0, width: 1160, height: 740),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
         window.title = "My Explorer"
@@ -86,6 +131,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         window.isReleasedWhenClosed = false
         window.contentView = ExplorerSurface(frame: NSRect(x: 0, y: 0, width: 1160, height: 740))
         super.init(window: window)
+        window.addressField = address
         window.delegate = self
         FileCommands.shared.owner = self
         gitState.onChange = { [weak self] in self?.renderGit() }
@@ -231,13 +277,20 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         languagePicker.setAccessibilityLabel(L10n.text("language.accessibility"))
         languagePicker.toolTip = L10n.text("language.label")
         languagePicker.widthAnchor.constraint(equalToConstant: max(160, ExplorerStyle.preferences.fontSize(for: .bars) * 12)).isActive = true
-        if ExplorerStyle.preferences.fontSize(for: .bars) > 16 {
-            addBar(ExplorerStyle.stack([openButton, copyButton, spacer, previewButton]), to: root, height: 43)
-            let optionSpacer = NSView(); optionSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            addBar(ExplorerStyle.stack([languagePicker, optionSpacer, hiddenButton, mode], spacing: 14), to: root, height: 43)
-        } else {
-            addBar(ExplorerStyle.stack([openButton, copyButton, spacer, languagePicker, hiddenButton, mode, previewButton], spacing: 14), to: root, height: 43)
-        }
+        extractButton.title = L10n.text("ocr.title")
+        extractButton.setAccessibilityIdentifier("explorer.toolbar.extractText")
+        extractButton.target = self
+        extractButton.action = #selector(extractText)
+        searchablePDFButton.title = L10n.text("ocr.create_pdf")
+        searchablePDFButton.setAccessibilityIdentifier("explorer.toolbar.searchablePDF")
+        searchablePDFButton.target = self
+        searchablePDFButton.action = #selector(batchOCR)
+        extractButton.isHidden = true
+        searchablePDFButton.isHidden = true
+        addBar(ExplorerStyle.stack([openButton, copyButton, extractButton, searchablePDFButton, spacer, previewButton]), to: root, height: 43)
+        let optionSpacer = NSView()
+        optionSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        addBar(ExplorerStyle.stack([languagePicker, optionSpacer, hiddenButton, mode], spacing: 14), to: root, height: 43)
         addLine(to: root)
 
         errorLabel.maximumNumberOfLines = 2
@@ -557,6 +610,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             if session.blocksInteraction {
                 status.stringValue = L10n.text("status.loading")
                 openButton.isEnabled = false; copyButton.isEnabled = false
+                extractButton.isHidden = true; searchablePDFButton.isHidden = true
                 message.isHidden = true
             }
             return
@@ -637,6 +691,10 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
                                                      filtered: !filter.stringValue.isEmpty, selected: count)
         openButton.isEnabled = count == 1 && !session.blocksInteraction
         copyButton.isEnabled = count > 0 && !session.blocksInteraction
+        let eligible = !session.blocksInteraction && (1...50).contains(count) && Self.canBatchOCR(selectedTableEntries())
+        extractButton.isHidden = !eligible || count != 1
+        searchablePDFButton.isHidden = !eligible
+        searchablePDFButton.title = L10n.text(count == 1 ? "ocr.create_pdf" : "ocr.create_pdfs")
         updatePreviewSelection()
     }
 
@@ -1003,8 +1061,13 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
 
     private func commandEntries(_ sender: Any?) -> [FileEntry] {
         if let item = sender as? NSMenuItem, item.menu === table.menu { return contextEntries }
+        if let button = sender as? NSButton, button === extractButton || button === searchablePDFButton { return selectedTableEntries() }
         guard acceptsFileListCommands else { return [] }
-        return table.selectedRowIndexes.compactMap { visibleEntries.indices.contains($0) ? visibleEntries[$0] : nil }
+        return selectedTableEntries()
+    }
+
+    private func selectedTableEntries() -> [FileEntry] {
+        table.selectedRowIndexes.compactMap { visibleEntries.indices.contains($0) ? visibleEntries[$0] : nil }
     }
     @objc func cutFiles(_ sender: Any?) {
         guard !session.blocksInteraction else { return }
@@ -1151,6 +1214,14 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy command: Selector) -> Bool {
         if control === address {
+            if command == #selector(NSResponder.cancelOperation(_:)), !textView.hasMarkedText() {
+                addressSuggestions.dismiss()
+                let currentAddress = CloudAccounts.shared.address(for: session.history.current.url)
+                address.stringValue = currentAddress
+                textView.string = currentAddress
+                textView.selectAll(nil)
+                return true
+            }
             return addressSuggestions.handle(command, editor: textView) { path in
                 textView.insertText(path, replacementRange: NSRange(location: 0, length: (textView.string as NSString).length))
             }
@@ -1199,6 +1270,15 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         if !selected.isEmpty { session.remember(selection: Set(selected.map(\.explorerIdentity)), scrollOffset: 0) }
         session.navigate(.reload)
     }
+    func copyAddressText(_ editor: NSTextView) {
+        if editor.selectedRange().length > 0 {
+            editor.copy(nil)
+        } else if !editor.string.isEmpty {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(editor.string, forType: .string)
+        }
+    }
+
     @objc func focusAddress(_ sender: Any?) { window?.makeFirstResponder(address); address.selectText(nil) }
 
     @objc private func breadcrumbClicked(_ sender: BreadcrumbButton) {
@@ -1435,7 +1515,20 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
                 self.focusFilter(nil)
                 return nil
             }
-            // Ctrl+F and other editing commands remain native in text views, including IME.
+            if let editor, editor === self.address.currentEditor(), !editor.hasMarkedText(),
+               self.window?.attachedSheet == nil, NSApp.modalWindow == nil,
+               flags == .control || flags == .command {
+                switch key {
+                case "a": editor.selectAll(nil); return nil
+                case "c": self.copyAddressText(editor); return nil
+                case "x":
+                    if editor.selectedRange().length > 0 { editor.cut(nil) }
+                    return nil
+                case "v": editor.paste(nil); return nil
+                default: break
+                }
+            }
+            // Leave other editing commands, including input-method composition, to AppKit.
             if editor != nil { return event }
             if flags == [.command, .option] && key == "v" {
                 if self.acceptsFileListCommands { self.moveFilesHere(nil) }

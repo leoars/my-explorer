@@ -6,11 +6,11 @@ My Explorer é um gerenciador de arquivos nativo para macOS. Ele reúne a árvor
 
 ![Lista em português filtrada pelo nome do arquivo, com duas abas abertas](docs/screenshots/navigation-pt-BR.png)
 
-## Instalar a versão 28
+## Instalar a versão 29
 
-Abra o DMG, copie **My Explorer** para **Aplicativos**, ejete a imagem de disco e abra o aplicativo. Esta versão foi assinada com um certificado Apple Development e não foi notarizada pela Apple. [Baixar para Mac](https://github.com/leoars/my-explorer/releases/tag/v0.1.0)
+Abra o DMG, copie **My Explorer** para **Aplicativos**, ejete a imagem de disco e abra o aplicativo. Esta versão foi assinada com um certificado Apple Development e não foi notarizada pela Apple. [Baixar para Mac](https://github.com/leoars/my-explorer/releases/latest)
 
-Na versão 28, você pode importar um CSV de credenciais do S3, escolher um bucket, criar pastas e mover arquivos entre elas por arraste ou com **Recortar** e **Colar**. Se excluir um arquivo do S3 pelo My Explorer, use **⌘Z** ou **Ctrl+Z** na mesma sessão para restaurá-lo.
+Na versão 29, ao arrastar arquivos sobre a árvore de pastas, uma pasta só se abre depois de o ponteiro ficar parado sobre ela por um segundo; as pastas pelo caminho continuam fechadas. Na barra de endereços, o primeiro clique seleciona o endereço inteiro, o segundo posiciona o cursor e **Esc** restaura o endereço atual. A conexão com assistentes de IA passou para **Opções → Integrações**, e o aplicativo tem um novo ícone.
 
 ## Instalar a partir do código-fonte
 
@@ -75,7 +75,7 @@ Em **Opções**, o My Explorer pode verificar novas versões ao abrir. Se houver
 
 ## Automação local
 
-Para integrar a CLI ou um cliente MCP, abra **Exibir → Acesso de IA**, habilite a automação e conceda as permissões necessárias a uma pasta. A autorização expira em 24 horas. Mantenha o aplicativo aberto e importe a configuração gerada em `mcp.json` no cliente.
+Para integrar a CLI ou um cliente MCP, abra **Opções → Integrações → Conectar um assistente de IA**, habilite a automação e conceda as permissões necessárias a uma pasta. A autorização expira em 24 horas. Mantenha o aplicativo aberto e importe a configuração gerada em `mcp.json` no cliente.
 
 ## Testar e contribuir
 

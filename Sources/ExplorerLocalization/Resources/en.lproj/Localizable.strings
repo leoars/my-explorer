@@ -180,7 +180,7 @@
 "cloud.conflict.merge" = "Merge folders";
 
 /* Local automation access and deletion */
-"automation.title" = "AI access";
+"automation.title" = "Connect an AI assistant";
 "automation.enabled" = "Allow local automation";
 "automation.client" = "Client name";
 "automation.local_root" = "Authorized local folder";
@@ -538,3 +538,7 @@
 "s3.move.copy_unconfirmed" = "S3 did not confirm the copy. The source file was kept.";
 "s3.move.source_retained" = "The file was copied. The original is still in the source folder.";
 "s3.move.delete_unconfirmed" = "The file was copied. Refresh the source folder to check whether the original was removed.";
+"options.general" = "General";
+"options.integrations" = "Integrations";
+"ocr.create_pdf" = "Create searchable PDF…";
+"ocr.create_pdfs" = "Create searchable PDFs…";
