@@ -14,6 +14,8 @@ DMG를 열고 **My Explorer**를 **응용 프로그램** 폴더에 복사하세�
 
 macOS 14 이상이 필요하며, Apple Silicon과 Intel을 모두 지원합니다. 이전 버전에서 업데이트하는 경우, macOS가 개인정보 보호 권한과 앱이 키체인에 저장한 암호에 대한 접근을 다시 요청할 수 있습니다.
 
+My Explorer, My Notepad, My Paint를 한 번에 설치하려면 [My 스위트 설치 프로그램](https://github.com/leoars/my-suite/blob/main/docs/readme/en.md)을 사용하세요.
+
 ## 기능
 
 ### 탐색

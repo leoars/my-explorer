@@ -14,6 +14,8 @@ My Explorer ist ein nativer Dateimanager für macOS. Er verbindet Ordnerbaum, Ta
 
 Erfordert macOS 14 oder neuer, auf Apple Silicon oder Intel. Wenn du von einer früheren Version aktualisierst, fragt macOS möglicherweise erneut nach den Datenschutzberechtigungen und nach dem Zugriff auf die Passwörter, die die App im Schlüsselbund gesichert hat.
 
+Um My Explorer, My Notepad und My Paint auf einmal zu installieren, nutze das [Installationsprogramm der My-Suite](https://github.com/leoars/my-suite/blob/main/docs/readme/en.md).
+
 ## Funktionen
 
 ### Navigation

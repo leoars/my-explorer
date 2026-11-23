@@ -14,6 +14,8 @@ DMG を開き、**My Explorer** を「**アプリケーション**」にコピ�
 
 macOS 14 以降が必要で、Apple Silicon と Intel のどちらにも対応しています。以前のバージョンからアップデートする場合、プライバシーのアクセス許可と、アプリがキーチェーンに保存したパスワードへのアクセスを、macOS があらためて求めることがあります。
 
+My Explorer、My Notepad、My Paint をまとめてインストールするには、[My スイートのインストーラ](https://github.com/leoars/my-suite/blob/main/docs/readme/en.md)を使ってください。
+
 ## 機能
 
 ### ナビゲーション

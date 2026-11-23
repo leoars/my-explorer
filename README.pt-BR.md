@@ -14,6 +14,8 @@ Abra o DMG, copie **My Explorer** para **Aplicativos**, ejete a imagem de disco 
 
 Requer macOS 14 ou posterior, em Apple Silicon ou Intel. Se você está atualizando de uma versão anterior, o macOS pode pedir de novo as permissões de privacidade e o acesso às senhas que o aplicativo guardou nas Chaves.
 
+Para instalar o My Explorer, o My Notepad e o My Paint de uma vez, use o [instalador da suíte My](https://github.com/leoars/my-suite).
+
 ## Funcionalidades
 
 ### Navegação

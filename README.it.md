@@ -14,6 +14,8 @@ Apri il DMG, copia **My Explorer** in **Applicazioni**, espelli l’immagine dis
 
 Richiede macOS 14 o successivo, su Apple Silicon o Intel. Se aggiorni da una versione precedente, macOS potrebbe chiedere di nuovo i permessi di privacy e l’accesso alle password che l’app ha salvato nel Portachiavi.
 
+Per installare My Explorer, My Notepad e My Paint in una volta sola, usa il [programma di installazione della suite My](https://github.com/leoars/my-suite/blob/main/docs/readme/en.md).
+
 ## Funzionalità
 
 ### Navigazione

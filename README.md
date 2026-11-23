@@ -14,6 +14,8 @@ Open the DMG, copy **My Explorer** to **Applications**, eject the disk image and
 
 Requires macOS 14 or later, on Apple Silicon or Intel. If you are updating from an earlier version, macOS may ask again for privacy permissions and for access to the passwords the app saved in Keychain.
 
+To install My Explorer, My Notepad and My Paint in one go, use the [My suite installer](https://github.com/leoars/my-suite/blob/main/docs/readme/en.md).
+
 ## Features
 
 ### Navigation
