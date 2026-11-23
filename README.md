@@ -25,7 +25,7 @@ To install My Explorer, My Notepad and My Paint in one go, use the [My suite ins
 - A single address bar: it shows the clickable folder trail and turns into the path as text when you click it, with suggestions as you type.
 - **Back**, **Forward**, **Up** and **Refresh**. The list refreshes by itself when files change outside the app.
 - **Filter this folder** by name, and **Search Files…** by name, extension, content, date and tags, in this folder or across the whole Mac. Searches can be saved to the tree.
-- Menus inside the window (File, Edit, View, Navigate, Language), in addition to the macOS menu bar.
+- Menus inside the window (My Explorer, File, Edit, View, Navigate, Window, Help), in addition to the macOS menu bar.
 
 ### Views and sorting
 

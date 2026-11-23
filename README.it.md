@@ -25,7 +25,7 @@ Per installare My Explorer, My Notepad e My Paint in una volta sola, usa il [pro
 - Una sola barra degli indirizzi: mostra il percorso delle cartelle su cui puoi fare clic e diventa il percorso in formato testo quando ci fai clic, con suggerimenti mentre scrivi.
 - **Indietro**, **Avanti**, **Cartella superiore** e **Aggiorna**. L’elenco si aggiorna da solo quando i file cambiano dall’esterno.
 - **Filtra questa cartella** per nome e **Cerca file…** per nome, estensione, contenuto, data e tag, in questa cartella o in tutto il Mac. Le ricerche si possono salvare nell’albero.
-- Menu all’interno della finestra (File, Modifica, Visualizza, Navigazione, Lingua), oltre alla barra dei menu di macOS.
+- Menu all’interno della finestra (My Explorer, File, Modifica, Visualizza, Navigazione, Finestra, Aiuto), oltre alla barra dei menu di macOS.
 
 ### Viste e ordinamento
 

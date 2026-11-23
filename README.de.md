@@ -25,7 +25,7 @@ Um My Explorer, My Notepad und My Paint auf einmal zu installieren, nutze das [I
 - Eine einzige Adressleiste: Sie zeigt den anklickbaren Ordnerpfad und wird beim Anklicken zum Pfad als Text, mit Vorschlägen während der Eingabe.
 - **Zurück**, **Vorwärts**, **Übergeordneter Ordner** und **Aktualisieren**. Die Liste aktualisiert sich von selbst, wenn sich Dateien außerhalb der App ändern.
 - **Diesen Ordner filtern** nach Namen und **Dateien suchen…** nach Name, Erweiterung, Inhalt, Datum und Tags, in diesem Ordner oder auf dem gesamten Mac. Suchen lassen sich im Baum sichern.
-- Menüs im Fenster (Datei, Bearbeiten, Ansicht, Navigation, Sprache), zusätzlich zur Menüleiste von macOS.
+- Menüs im Fenster (My Explorer, Datei, Bearbeiten, Ansicht, Navigation, Fenster, Hilfe), zusätzlich zur Menüleiste von macOS.
 
 ### Ansichten und Sortierung
 

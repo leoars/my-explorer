@@ -25,7 +25,7 @@ Para instalar o My Explorer, o My Notepad e o My Paint de uma vez, use o [instal
 - Uma barra de endereço só: mostra a trilha de pastas clicável e vira o caminho em texto quando você clica nela, com sugestões enquanto digita.
 - **Voltar**, **Avançar**, **Subir** e **Atualizar**. A lista se atualiza sozinha quando os arquivos mudam por fora.
 - **Filtrar esta pasta** pelo nome, e **Pesquisar arquivos…** por nome, extensão, conteúdo, data e etiquetas, nesta pasta ou no Mac inteiro. As buscas podem ser salvas na árvore.
-- Menus dentro da janela (Arquivo, Editar, Exibir, Navegar, Idioma), além da barra de menus do macOS.
+- Menus dentro da janela (My Explorer, Arquivo, Editar, Exibir, Navegar, Janela, Ajuda), além da barra de menus do macOS.
 
 ### Visualizações e classificação
 

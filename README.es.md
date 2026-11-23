@@ -25,7 +25,7 @@ Para instalar My Explorer, My Notepad y My Paint de una vez, usa el [instalador 
 - Una sola barra de direcciones: muestra la ruta de carpetas en la que puedes hacer clic y se convierte en la ruta en texto cuando haces clic en ella, con sugerencias mientras escribes.
 - **Atrás**, **Adelante**, **Subir** y **Actualizar**. La lista se actualiza sola cuando los archivos cambian desde fuera.
 - **Filtrar esta carpeta** por nombre y **Buscar archivos…** por nombre, extensión, contenido, fecha y etiquetas, en esta carpeta o en todo el Mac. Las búsquedas se pueden guardar en el árbol.
-- Menús dentro de la ventana (Archivo, Editar, Ver, Navegar, Idioma), además de la barra de menús de macOS.
+- Menús dentro de la ventana (My Explorer, Archivo, Editar, Ver, Navegar, Ventana, Ayuda), además de la barra de menús de macOS.
 
 ### Vistas y ordenación
 

@@ -25,7 +25,7 @@ Pour installer My Explorer, My Notepad et My Paint en une seule fois, utilisez l
 - Une seule barre d’adresse : elle affiche le fil des dossiers, cliquable, et se transforme en chemin au format texte quand vous cliquez dessus, avec des suggestions pendant la saisie.
 - **Précédent**, **Suivant**, **Dossier parent** et **Actualiser**. La liste s’actualise d’elle-même quand les fichiers changent en dehors de l’application.
 - **Filtrer ce dossier** par nom, et **Rechercher des fichiers…** par nom, extension, contenu, date et étiquettes, dans ce dossier ou sur tout le Mac. Les recherches peuvent être enregistrées dans l’arborescence.
-- Des menus dans la fenêtre (Fichier, Édition, Affichage, Navigation, Langue), en plus de la barre des menus de macOS.
+- Des menus dans la fenêtre (My Explorer, Fichier, Édition, Affichage, Navigation, Fenêtre, Aide), en plus de la barre des menus de macOS.
 
 ### Affichages et tri
 
