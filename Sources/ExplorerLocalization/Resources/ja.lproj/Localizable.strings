@@ -118,6 +118,13 @@
 "error.operation" = "操作を完了できませんでした。アクセス権と空き容量を確認してください。";
 "view.prototype" = "プライベートベータ";
 "properties.path" = "パス";
+"properties.calculating" = "計算中…";
+"properties.contents" = "内容";
+"properties.files.one" = "ファイル %@ 個";
+"properties.files.other" = "ファイル %@ 個";
+"properties.folders.one" = "フォルダ %@ 個";
+"properties.folders.other" = "フォルダ %@ 個";
+"properties.contents_format" = "%@、%@";
 
 // Archive operation errors
 "archive.error.invalidSelection" = "ローカルのファイルまたはフォルダを1つ以上選択してください。";
@@ -179,6 +186,7 @@
 "cloud.transfer.items" = "%@ / %@";
 
 "storage.error.limitExceeded" = "転送が10,000項目またはフォルダの深さ64階層の上限を超えています。";
+"deletion.limitExceeded" = "削除が%@項目またはフォルダの深さ64階層の上限を超えています。";
 
 "cloud.conflict.merge" = "フォルダを結合";
 
@@ -607,3 +615,19 @@
 "window.front" = "すべてを手前に移動";
 "menu.help" = "ヘルプ";
 "help.readme" = "My Explorer ヘルプ";
+
+"tree.favorites" = "よく使うフォルダ";
+"tree.recents" = "最近使ったフォルダ";
+"favorites.add" = "よく使うフォルダに追加";
+"favorites.remove" = "よく使うフォルダから削除";
+"favorites.add_current" = "このフォルダを追加";
+"favorites.remove_current" = "このフォルダを削除";
+"menu.favorite_folders" = "よく使うフォルダ";
+"menu.recent_folders" = "最近使ったフォルダ";
+"recents.clear" = "最近使ったフォルダを消去";
+"shortcuts.empty" = "フォルダはありません";
+"options.shortcuts" = "最近使ったフォルダとよく使うフォルダ";
+"options.show_favorites" = "よく使うフォルダをツリーに表示";
+"options.show_recents" = "最近使ったフォルダをツリーに表示";
+"options.recent_limit" = "最近使ったフォルダの表示数:";
+"options.recents_help" = "保護されたフォルダ、ゴミ箱、検索、クラウド上のフォルダは最近使ったフォルダに含まれません。ツリーの「よく使うフォルダ」にフォルダをドラッグすると追加でき、グループ内でドラッグすると順序を変えられます。";

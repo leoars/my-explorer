@@ -366,8 +366,10 @@ public struct SharedFileOperations: Sendable {
         try await gate.run { try await ArchiveService().extract(archiveURL: url, to: destination) }
     }
     public func executeDeletion(planID: UUID, using service: StorageDeletionService, recordUndo: Bool = false,
+                                progress: (@Sendable (_ completed: Int, _ total: Int) async -> Void)? = nil,
                                 authorizationCheck: @escaping @Sendable (URL) async -> Bool) async throws -> StorageDeletionResult {
-        try await gate.run { try await service.execute(planID: planID, undoHistory: recordUndo ? self.localTransfers : nil, authorizationCheck: authorizationCheck) }
+        try await gate.run { try await service.execute(planID: planID, undoHistory: recordUndo ? self.localTransfers : nil,
+                                                       progress: progress, authorizationCheck: authorizationCheck) }
     }
 }
 

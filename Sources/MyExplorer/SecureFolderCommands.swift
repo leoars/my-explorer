@@ -131,6 +131,11 @@ final class SecureFolderCommands: NSObject, NSMenuItemValidation {
         mounts[vault.standardizedFileURL] != nil
     }
 
+    /// Whether the folder is the open volume of a protected folder, or inside one.
+    func isInsideUnlockedVault(_ url: URL) -> Bool {
+        mounts.values.contains { Self.contains(url, in: $0) }
+    }
+
     func lock(_ vault: URL) {
         run { [self] _ in
             let key = vault.standardizedFileURL

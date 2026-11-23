@@ -118,6 +118,13 @@
 "error.operation" = "Impossibile completare l’operazione. Controlla i permessi e lo spazio disponibile.";
 "view.prototype" = "Beta privata";
 "properties.path" = "Percorso";
+"properties.calculating" = "Calcolo in corso…";
+"properties.contents" = "Contenuto";
+"properties.files.one" = "%@ file";
+"properties.files.other" = "%@ file";
+"properties.folders.one" = "%@ cartella";
+"properties.folders.other" = "%@ cartelle";
+"properties.contents_format" = "%@, %@";
 
 // Archive operation errors
 "archive.error.invalidSelection" = "Seleziona almeno un file o una cartella locale.";
@@ -179,6 +186,7 @@
 "cloud.transfer.items" = "%@ / %@";
 
 "storage.error.limitExceeded" = "Il trasferimento supera il limite di 10.000 elementi o 64 livelli di cartelle.";
+"deletion.limitExceeded" = "L’eliminazione supera il limite di %@ elementi o 64 livelli di cartelle.";
 
 "cloud.conflict.merge" = "Unisci cartelle";
 
@@ -607,3 +615,19 @@
 "window.front" = "Porta tutto in primo piano";
 "menu.help" = "Aiuto";
 "help.readme" = "Aiuto di My Explorer";
+
+"tree.favorites" = "Preferite";
+"tree.recents" = "Recenti";
+"favorites.add" = "Aggiungi alle preferite";
+"favorites.remove" = "Rimuovi dalle preferite";
+"favorites.add_current" = "Aggiungi questa cartella";
+"favorites.remove_current" = "Rimuovi questa cartella";
+"menu.favorite_folders" = "Cartelle preferite";
+"menu.recent_folders" = "Cartelle recenti";
+"recents.clear" = "Cancella recenti";
+"shortcuts.empty" = "Nessuna cartella";
+"options.shortcuts" = "Cartelle recenti e preferite";
+"options.show_favorites" = "Mostra le cartelle preferite nell’albero";
+"options.show_recents" = "Mostra le cartelle recenti nell’albero";
+"options.recent_limit" = "Numero di cartelle recenti:";
+"options.recents_help" = "Le cartelle protette, il Cestino, le ricerche e le cartelle nel cloud non compaiono mai tra le recenti. Trascina una cartella su Preferite nell’albero per aggiungerla, o all’interno del gruppo per cambiarne l’ordine.";

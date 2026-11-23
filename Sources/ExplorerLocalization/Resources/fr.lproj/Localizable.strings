@@ -118,6 +118,13 @@
 "error.operation" = "L’opération a échoué. Vérifiez les autorisations et l’espace disponible.";
 "view.prototype" = "Bêta privée";
 "properties.path" = "Chemin";
+"properties.calculating" = "Calcul en cours…";
+"properties.contents" = "Contenu";
+"properties.files.one" = "%@ fichier";
+"properties.files.other" = "%@ fichiers";
+"properties.folders.one" = "%@ dossier";
+"properties.folders.other" = "%@ dossiers";
+"properties.contents_format" = "%@, %@";
 
 // Archive operation errors
 "archive.error.invalidSelection" = "Sélectionnez au moins un fichier ou un dossier local.";
@@ -179,6 +186,7 @@
 "cloud.transfer.items" = "%@ / %@";
 
 "storage.error.limitExceeded" = "Le transfert dépasse la limite de 10 000 éléments ou de 64 niveaux de dossiers.";
+"deletion.limitExceeded" = "La suppression dépasse la limite de %@ éléments ou de 64 niveaux de dossiers.";
 
 "cloud.conflict.merge" = "Fusionner les dossiers";
 
@@ -607,3 +615,19 @@
 "window.front" = "Tout ramener au premier plan";
 "menu.help" = "Aide";
 "help.readme" = "Aide de My Explorer";
+
+"tree.favorites" = "Favoris";
+"tree.recents" = "Récents";
+"favorites.add" = "Ajouter aux favoris";
+"favorites.remove" = "Retirer des favoris";
+"favorites.add_current" = "Ajouter ce dossier";
+"favorites.remove_current" = "Retirer ce dossier";
+"menu.favorite_folders" = "Dossiers favoris";
+"menu.recent_folders" = "Dossiers récents";
+"recents.clear" = "Effacer les dossiers récents";
+"shortcuts.empty" = "Aucun dossier";
+"options.shortcuts" = "Dossiers récents et favoris";
+"options.show_favorites" = "Afficher les dossiers favoris dans l’arborescence";
+"options.show_recents" = "Afficher les dossiers récents dans l’arborescence";
+"options.recent_limit" = "Nombre de dossiers récents :";
+"options.recents_help" = "Les dossiers protégés, la Corbeille, les recherches et les dossiers dans le cloud n’apparaissent jamais parmi les dossiers récents. Faites glisser un dossier sur Favoris dans l’arborescence pour l’ajouter, ou à l’intérieur du groupe pour changer l’ordre.";

@@ -76,6 +76,75 @@ final class StorageDeletionServiceTests: XCTestCase, @unchecked Sendable {
         await expect(.unsupportedEntry) { _ = try await service.plan(sources: [directory], recursive: true) }
         await expect(.unsafePath) { _ = try await service.plan(sources: [URL(fileURLWithPath: "/")], recursive: true) }
     }
+    func testManySelectedItemsPlanQuicklyWithTheirOwnLimitAndReportProgress() async throws {
+        let root = try fixture()
+        let files = (0..<12_000).map { root.appendingPathComponent("f\($0).opus") }
+        for file in files { XCTAssertTrue(FileManager.default.createFile(atPath: file.path, contents: nil)) }
+        let trash = RecordingTrash(); let service = local(trash)
+        await expect(.limitExceeded) { _ = try await service.plan(sources: files) }
+        let start = Date()
+        let plan = try await service.plan(sources: files, entryLimit: 20_000)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 10, "Planning must not compare every item with every other")
+        XCTAssertEqual(plan.itemCount, files.count)
+        let reports = CountRecorder()
+        let result = try await service.execute(planID: plan.id, progress: { done, total in await reports.add(done, total) }) { _ in true }
+        XCTAssertEqual(result.completed.count, files.count)
+        let seen = await reports.values
+        XCTAssertEqual(seen.count, files.count); XCTAssertEqual(seen.last?.0, files.count)
+        XCTAssertTrue(seen.allSatisfy { $0.1 == files.count })
+        await expect(.limitExceeded) { _ = try await service.plan(sources: Array(files.prefix(3)), entryLimit: 2) }
+    }
+    func testConcurrentTrashKeepsSameNamesApartAndStopsAfterAFailure() async throws {
+        let root = try fixture()
+        var files: [URL] = []
+        for folder in 0..<6 {
+            let directory = root.appendingPathComponent("d\(folder)")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            for name in [folder.isMultiple(of: 2) ? "Same.txt" : "SAME.txt", "other\(folder).txt"] {
+                let file = directory.appendingPathComponent(name)
+                try Data().write(to: file)
+                files.append(file)
+            }
+        }
+        let watcher = ConcurrencyTrash(refuse: nil)
+        let service = StorageDeletionService(clientFactory: { _ in throw CloudFailure(.invalidConfiguration) }, trash: watcher)
+        let plan = try await service.plan(sources: files)
+        let journal = LocalTransferService()
+        let result = try await service.execute(planID: plan.id, undoHistory: journal) { _ in true }
+        XCTAssertEqual(result.completed.count, plan.itemCount)
+        let clash = await watcher.sameNameAtOnce, peak = await watcher.peak
+        XCTAssertFalse(clash, "Two items of the same name went to the Trash at once")
+        XCTAssertGreaterThan(peak, 1, "Items should go to the Trash several at a time")
+        _ = try await journal.undo()
+        XCTAssertTrue(files.allSatisfy { FileManager.default.fileExists(atPath: $0.path) }, "One undo restores the whole deletion")
+
+        let refused = root.appendingPathComponent("refused"); try Data().write(to: refused)
+        let many = (0..<40).map { root.appendingPathComponent("m\($0)") }
+        for file in many { try Data().write(to: file) }
+        let failing = ConcurrencyTrash(refuse: "refused")
+        let second = StorageDeletionService(clientFactory: { _ in throw CloudFailure(.invalidConfiguration) }, trash: failing)
+        let all = [refused] + many
+        let failingPlan = try await second.plan(sources: all)
+        do { _ = try await second.execute(planID: failingPlan.id) { _ in true }; XCTFail("Expected a failure") }
+        catch let failure as StorageDeletionFailure {
+            let gone = all.filter { !FileManager.default.fileExists(atPath: $0.path) }
+            XCTAssertEqual(Set(failure.completed), Set(gone), "Every item reported gone is gone, and only those")
+            XCTAssertLessThan(gone.count, many.count, "Nothing new starts after the failure")
+        }
+    }
+    func testOverlapIsFoundInEitherOrderAndForRepeatedItems() async throws {
+        let root = try fixture(); let inner = root.appendingPathComponent("a/b")
+        try FileManager.default.createDirectory(at: inner, withIntermediateDirectories: true)
+        let file = inner.appendingPathComponent("c"); try Data().write(to: file)
+        let sibling = root.appendingPathComponent("a b"); try Data().write(to: sibling)
+        let service = local()
+        let outer = root.appendingPathComponent("a")
+        await expect(.unsafePath) { _ = try await service.plan(sources: [file, outer], recursive: true) }
+        await expect(.unsafePath) { _ = try await service.plan(sources: [outer, file], recursive: true) }
+        await expect(.unsafePath) { _ = try await service.plan(sources: [file, file]) }
+        let fine = try await service.plan(sources: [inner, sibling], recursive: true)
+        XCTAssertEqual(fine.itemCount, 3)
+    }
     func testLimitsOverlapAndRevocationCoverSubtree() async throws {
         let directory = try fixture(); let file = directory.appendingPathComponent("a"); try Data().write(to: file)
         await expect(.limitExceeded) { _ = try await self.local(limits: .init(entries: 1)).plan(sources: [directory], recursive: true) }
@@ -323,4 +392,32 @@ private actor DeletionFactory {
     init(connection: CloudConnection, transport: DeletionGCS) { self.connection = connection; self.transport = transport }
     func changeBucket() { connection.bucket = "second-bucket" }
     func client() throws -> CloudStorageClient { try .init(connection: connection, credentials: .init(accessToken: "test"), transport: transport) }
+}
+
+private actor CountRecorder {
+    var values: [(Int, Int)] = []
+    func add(_ done: Int, _ total: Int) { values.append((done, total)) }
+}
+
+/// Moves items into a folder, slowly, noting how many go at once and whether two share a name.
+private actor ConcurrencyTrash: StorageTrash {
+    let refuse: String?
+    private var names: [String] = []
+    private(set) var peak = 0
+    private(set) var sameNameAtOnce = false
+    private let folder = FileManager.default.temporaryDirectory.appendingPathComponent("concurrency-trash-\(UUID())")
+    init(refuse: String?) { self.refuse = refuse }
+    func trash(_ url: URL) async throws { _ = try await trashReturningURL(url) }
+    func trashReturningURL(_ url: URL) async throws -> URL? {
+        let name = url.lastPathComponent.lowercased()
+        if names.contains(name) { sameNameAtOnce = true }
+        names.append(name); peak = max(peak, names.count)
+        defer { names.remove(at: names.firstIndex(of: name)!) }
+        try await Task.sleep(for: .milliseconds(5))
+        if url.lastPathComponent == refuse { throw CocoaError(.fileWriteNoPermission) }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let destination = folder.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.moveItem(at: url, to: destination)
+        return destination
+    }
 }

@@ -118,6 +118,13 @@
 "error.operation" = "Der Vorgang konnte nicht abgeschlossen werden. Prüfen Sie Berechtigungen und freien Speicherplatz.";
 "view.prototype" = "Private Beta";
 "properties.path" = "Pfad";
+"properties.calculating" = "Wird berechnet …";
+"properties.contents" = "Inhalt";
+"properties.files.one" = "%@ Datei";
+"properties.files.other" = "%@ Dateien";
+"properties.folders.one" = "%@ Ordner";
+"properties.folders.other" = "%@ Ordner";
+"properties.contents_format" = "%@, %@";
 
 // Archive operation errors
 "archive.error.invalidSelection" = "Wählen Sie mindestens eine lokale Datei oder einen lokalen Ordner aus.";
@@ -179,6 +186,7 @@
 "cloud.transfer.items" = "%@ / %@";
 
 "storage.error.limitExceeded" = "Die Übertragung überschreitet das Limit von 10.000 Elementen oder 64 Ordnerebenen.";
+"deletion.limitExceeded" = "Das Löschen überschreitet die Grenze von %@ Elementen oder 64 Ordnerebenen.";
 
 "cloud.conflict.merge" = "Ordner zusammenführen";
 
@@ -607,3 +615,19 @@
 "window.front" = "Alle nach vorne bringen";
 "menu.help" = "Hilfe";
 "help.readme" = "My Explorer-Hilfe";
+
+"tree.favorites" = "Favoriten";
+"tree.recents" = "Zuletzt geöffnet";
+"favorites.add" = "Zu Favoriten hinzufügen";
+"favorites.remove" = "Aus Favoriten entfernen";
+"favorites.add_current" = "Diesen Ordner hinzufügen";
+"favorites.remove_current" = "Diesen Ordner entfernen";
+"menu.favorite_folders" = "Favorisierte Ordner";
+"menu.recent_folders" = "Zuletzt geöffnete Ordner";
+"recents.clear" = "Liste leeren";
+"shortcuts.empty" = "Keine Ordner";
+"options.shortcuts" = "Zuletzt geöffnete und favorisierte Ordner";
+"options.show_favorites" = "Favorisierte Ordner in der Ordnerstruktur anzeigen";
+"options.show_recents" = "Zuletzt geöffnete Ordner in der Ordnerstruktur anzeigen";
+"options.recent_limit" = "Anzahl zuletzt geöffneter Ordner:";
+"options.recents_help" = "Geschützte Ordner, der Papierkorb, Suchen und Ordner in der Cloud erscheinen nie unter den zuletzt geöffneten Ordnern. Ziehe einen Ordner auf „Favoriten“ in der Ordnerstruktur, um ihn hinzuzufügen, oder innerhalb der Gruppe, um die Reihenfolge zu ändern.";

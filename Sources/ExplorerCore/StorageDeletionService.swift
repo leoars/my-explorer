@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 import Darwin
+import os
 
 public struct StorageDeletionPlan: Codable, Sendable {
     public let schemaVersion: Int
@@ -75,6 +76,8 @@ public actor StorageDeletionService {
     private var consumed: [UUID: Date] = [:]
     private var revoked: Set<UUID> = []
     private var running: Set<UUID> = []
+    /// Plans in which an item failed while others were under way.
+    private var stopping: Set<UUID> = []
 
     public init(clientFactory: @escaping @Sendable (UUID) async throws -> CloudStorageClient,
                 trash: any StorageTrash = SystemStorageTrash(), clock: @escaping @Sendable () -> Date = { Date() },
@@ -95,8 +98,11 @@ public actor StorageDeletionService {
 
     /// Optional additional restriction: exactly these remote objects and observed versions may be planned.
     /// Material folder markers count; virtual directories do not. Execution still revalidates and authorizes.
+    /// `entryLimit` replaces the service's item limit for this plan (the application's own window
+    /// allows far more than automation does); the depth limit always applies.
     public func plan(sources: [URL], recursive: Bool = false,
-                     expectedRemoteVersions: [URL: String]? = nil) async throws -> StorageDeletionPlan {
+                     expectedRemoteVersions: [URL: String]? = nil, entryLimit: Int? = nil) async throws -> StorageDeletionPlan {
+        let limits = Limits(entries: entryLimit ?? self.limits.entries, depth: self.limits.depth)
         do {
             try Self.cancel()
             guard !sources.isEmpty, limits.entries > 0, limits.depth >= 0, lifetime > 0 else { throw StorageDeletionFailure(.invalidPlan) }
@@ -104,11 +110,16 @@ public actor StorageDeletionService {
             guard plans.count < 128, consumed.count < 1024 else { throw StorageDeletionFailure(.limitExceeded) }
             var roots: [DeletionRoot] = []
             var count = 0
-            for source in sources {
+            // Overlap among local roots is found through sets (a root, or any folder holding a
+            // root), so planning thousands of selected items stays linear.
+            var localRoots = Set<String>(), localAncestors = Set<String>()
+            var remoteRoots: [URL] = []
+            let snapshots = try await Self.localSnapshots(sources, limits: limits)
+            for (index, source) in sources.enumerated() {
                 try Self.cancel()
                 let root: DeletionRoot
                 if source.isFileURL {
-                    let snapshot = try await Self.offMain { try DeletionLocalSnapshot.capture(source, limits: self.limits) }
+                    guard let snapshot = snapshots[index] else { throw StorageDeletionFailure(.invalidPlan) }
                     if snapshot.directory && !recursive { throw StorageDeletionFailure(.recursiveRequired) }
                     root = .local(snapshot)
                 } else if let remote = RemoteLocation.parse(source) {
@@ -116,11 +127,21 @@ public actor StorageDeletionService {
                     if remote.key.hasSuffix("/") && !recursive { throw StorageDeletionFailure(.recursiveRequired) }
                     let client = try await clientFactory(remote.connectionID)
                     guard client.connection.id == remote.connectionID else { throw StorageDeletionFailure(.unsafePath) }
-                    let objects = try await inventory(client: client, key: remote.key)
+                    let objects = try await inventory(client: client, key: remote.key, limits: limits)
                     guard !objects.isEmpty else { throw StorageDeletionFailure(.notFound) }
                     root = .remote(source, client.connection, remote.key, objects)
                 } else { throw StorageDeletionFailure(.unsafePath) }
-                guard !roots.contains(where: { Self.overlap($0.url, root.url) }) else { throw StorageDeletionFailure(.unsafePath) }
+                if root.url.isFileURL {
+                    let path = root.url.path
+                    let ancestors = Self.ancestors(of: path)
+                    guard !localRoots.contains(path), !localAncestors.contains(path), !ancestors.contains(where: localRoots.contains) else {
+                        throw StorageDeletionFailure(.unsafePath)
+                    }
+                    localRoots.insert(path); localAncestors.formUnion(ancestors)
+                } else {
+                    guard !remoteRoots.contains(where: { Self.overlap($0, root.url) }) else { throw StorageDeletionFailure(.unsafePath) }
+                    remoteRoots.append(root.url)
+                }
                 count += root.count
                 guard count <= limits.entries else { throw StorageDeletionFailure(.limitExceeded) }
                 roots.append(root)
@@ -150,66 +171,83 @@ public actor StorageDeletionService {
             let preview = StorageDeletionPlan(schemaVersion: 1, id: UUID(), expiresAt: clock().addingTimeInterval(lifetime),
                                               sources: roots.map(\.url), itemCount: count, recursive: recursive)
             guard plans.count < 128 else { throw StorageDeletionFailure(.limitExceeded) }
-            plans[preview.id] = DeletionStoredPlan(preview: preview, roots: roots)
+            plans[preview.id] = DeletionStoredPlan(preview: preview, roots: roots, limits: limits)
             return preview
         } catch { throw Self.failure(error) }
     }
 
-    public func execute(planID: UUID, undoHistory: LocalTransferService? = nil, authorizationCheck: @escaping @Sendable (URL) async -> Bool) async throws -> StorageDeletionResult {
+    /// `progress` hears how many planned items are gone so far, out of the plan's total.
+    public func execute(planID: UUID, undoHistory: LocalTransferService? = nil,
+                        progress: (@Sendable (_ completed: Int, _ total: Int) async -> Void)? = nil,
+                        authorizationCheck: @escaping @Sendable (URL) async -> Bool) async throws -> StorageDeletionResult {
         try Self.cancel()
         guard consumed[planID] == nil else { throw StorageDeletionFailure(.reusedPlan) }
         guard let plan = plans.removeValue(forKey: planID) else { throw StorageDeletionFailure(.invalidPlan) }
         consumed[planID] = plan.preview.expiresAt
         running.insert(planID)
-        defer { running.remove(planID); revoked.remove(planID) }
+        defer { running.remove(planID); revoked.remove(planID); stopping.remove(planID) }
         // No suspension precedes consumption: concurrent execution cannot replay the plan.
         guard clock() < plan.preview.expiresAt else { throw StorageDeletionFailure(.expiredPlan) }
-        var completed: [URL] = []
+        let completed = DeletionCompleted()
+        let limits = plan.limits, total = plan.preview.itemCount
+        var done = 0
         do {
+            let localRoots = plan.roots.compactMap { root -> DeletionLocalSnapshot? in if case .local(let value) = root { value } else { nil } }
+            if localRoots.count > 1, localRoots.count == plan.roots.count {
+                // Items on this Mac go to the Trash several at a time, each with every check of its
+                // own: the Trash, and above all iCloud Drive, spend most of the time waiting.
+                // Two items of the same name never go at once: the Trash picks a free name for each.
+                try await withThrowingTaskGroup(of: (Int, String).self) { group in
+                    var pending = localRoots.makeIterator(), held: DeletionLocalSnapshot?
+                    var names = Set<String>(), inFlight = 0
+                    func start() -> Bool {
+                        guard inFlight < Self.concurrentTrashItems, let expected = held ?? pending.next() else { return false }
+                        let name = expected.source.lastPathComponent.precomposedStringWithCanonicalMapping.lowercased()
+                        guard !names.contains(name) else { held = expected; return false }
+                        held = nil; names.insert(name); inFlight += 1
+                        group.addTask {
+                            try await self.trashLocal(expected, planID: planID, limits: limits, undoHistory: undoHistory,
+                                                      authorizationCheck: authorizationCheck, completed: completed, done: completed.count, total: total)
+                            return (expected.items.count, name)
+                        }
+                        return true
+                    }
+                    while start() {}
+                    // After a failure nothing new starts and no item still being checked moves; one
+                    // already handed to the Trash finishes and is recorded for undo.
+                    var failure: (any Error)?
+                    while !group.isEmpty {
+                        do {
+                            guard let (count, name) = try await group.next() else { break }
+                            inFlight -= 1; names.remove(name)
+                            done += count
+                            await progress?(done, total)
+                            if failure == nil { while start() {} }
+                        } catch {
+                            inFlight -= 1
+                            // The names of failed items stay taken: nothing new starts anyway.
+                            if failure == nil { failure = error; stopping.insert(planID) }
+                        }
+                    }
+                    if let failure { throw failure }
+                }
+                return StorageDeletionResult(completed: completed.values)
+            }
             for root in plan.roots {
                 try active(planID)
                 switch root {
                 case .local(let expected):
-                    // One Trash mutation covers the whole subtree: authorize every planned entry first.
-                    for url in expected.items.keys.sorted(by: { $0.path < $1.path }) {
-                        guard await authorizationCheck(url) else { throw StorageDeletionFailure(.notAuthorized) }
-                        try active(planID)
-                    }
-                    let actual = try await Self.offMain { try DeletionLocalSnapshot.capture(expected.source, limits: self.limits) }
-                    guard actual == expected else { throw StorageDeletionFailure(.changed) }
-                    // Recheck grants after the filesystem scan; authorization can be revoked while it runs.
-                    for url in expected.items.keys.sorted(by: { $0.path < $1.path }) {
-                        guard await authorizationCheck(url) else { throw StorageDeletionFailure(.notAuthorized) }
-                        try active(planID)
-                    }
-                    // A callback can itself modify the target. Reject such changes before the mutation.
-                    let finalSnapshot = try await Self.offMain { try DeletionLocalSnapshot.capture(expected.source, limits: self.limits) }
-                    guard finalSnapshot == expected else { throw StorageDeletionFailure(.changed) }
-                    guard await authorizationCheck(expected.source) else { throw StorageDeletionFailure(.notAuthorized) }
-                    try active(planID)
-                    try await Self.offMain {
-                        do { try LocalTransferRecovery.assertExportable(expected.source) }
-                        catch { throw StorageDeletionFailure(Task.isCancelled ? .cancelled : .unsupportedEntry) }
-                    }
-                    try active(planID)
-                    if undoHistory != nil || trashLibrary != nil {
-                        let original = try TrashRestoreOrigin(expected.source)
-                        if let location = try await trash.trashReturningURL(expected.source) {
-                            await undoHistory?.recordTrash(original, at: location, group: planID)
-                            completed.append(expected.source)
-                            try await trashLibrary?.record(TrashedItem(origin: original, location: location))
-                        } else { completed.append(expected.source) }
-                    } else {
-                        try await trash.trash(expected.source)
-                        completed.append(expected.source)
-                    }
+                    try await trashLocal(expected, planID: planID, limits: limits, undoHistory: undoHistory,
+                                         authorizationCheck: authorizationCheck, completed: completed, done: done, total: total)
+                    done += expected.items.count
+                    await progress?(done, total)
                 case .remote(let source, let connection, let key, let expected):
                     let id = connection.id
                     let client = try await clientFactory(id)
                     guard client.connection == connection else {
                         throw StorageDeletionFailure(.changed)
                     }
-                    let current = try await inventory(client: client, key: key)
+                    let current = try await inventory(client: client, key: key, limits: limits)
                     guard !current.isEmpty else { throw StorageDeletionFailure(.notFound) }
                     guard DeletionRemoteInventory.matches(current, expected) else {
                         throw StorageDeletionFailure(.changed)
@@ -233,6 +271,8 @@ public actor StorageDeletionService {
                         case .acknowledged:
                             if let backup { await undoHistory?.recordS3Trash(backup, group: planID) }
                             completed.append(url)
+                            done += 1
+                            await progress?(done, total)
                         case .absent: throw StorageDeletionFailure(.notFound)
                         case .changed:
                             throw StorageDeletionFailure(.changed)
@@ -243,7 +283,7 @@ public actor StorageDeletionService {
                     }
                     if key.hasSuffix("/") {
                         try active(planID)
-                        let remaining = try await inventory(client: client, key: key)
+                        let remaining = try await inventory(client: client, key: key, limits: limits)
                         guard remaining.isEmpty else {
                             throw StorageDeletionFailure(.changed)
                         }
@@ -251,10 +291,84 @@ public actor StorageDeletionService {
                     _ = source
                 }
             }
-            return StorageDeletionResult(completed: completed)
+            return StorageDeletionResult(completed: completed.values)
         } catch {
             let failure = Self.failure(error)
-            throw StorageDeletionFailure(failure.reason, completed: completed, indeterminate: failure.indeterminate, cloudReason: failure.cloudReason)
+            Self.log.error("Deletion stopped after \(done, privacy: .public) of \(total, privacy: .public): \(String(describing: failure.reason), privacy: .public) (\(String(describing: type(of: error)), privacy: .public))")
+            throw StorageDeletionFailure(failure.reason, completed: completed.values, indeterminate: failure.indeterminate, cloudReason: failure.cloudReason)
+        }
+    }
+
+    /// Moves one planned local item to the Trash after checking it again, exactly as planned.
+    private func trashLocal(_ expected: DeletionLocalSnapshot, planID: UUID, limits: Limits, undoHistory: LocalTransferService?,
+                            authorizationCheck: @escaping @Sendable (URL) async -> Bool, completed: DeletionCompleted,
+                            done: Int, total: Int) async throws {
+        // One Trash mutation covers the whole subtree: authorize every planned entry first.
+        for url in expected.items.keys.sorted(by: { $0.path < $1.path }) {
+            guard await authorizationCheck(url) else { throw StorageDeletionFailure(.notAuthorized) }
+            try active(planID)
+        }
+        let actual = try await Self.offMain { try DeletionLocalSnapshot.capture(expected.source, limits: limits) }
+        guard actual == expected else { Self.logChange(expected, actual, done: done, total: total, stage: "rescan"); throw StorageDeletionFailure(.changed) }
+        // Recheck grants after the filesystem scan; authorization can be revoked while it runs.
+        for url in expected.items.keys.sorted(by: { $0.path < $1.path }) {
+            guard await authorizationCheck(url) else { throw StorageDeletionFailure(.notAuthorized) }
+            try active(planID)
+        }
+        // A callback can itself modify the target. Reject such changes before the mutation.
+        let finalSnapshot = try await Self.offMain { try DeletionLocalSnapshot.capture(expected.source, limits: limits) }
+        guard finalSnapshot == expected else { Self.logChange(expected, finalSnapshot, done: done, total: total, stage: "final"); throw StorageDeletionFailure(.changed) }
+        guard await authorizationCheck(expected.source) else { throw StorageDeletionFailure(.notAuthorized) }
+        try active(planID)
+        try await Self.offMain {
+            do { try LocalTransferRecovery.assertExportable(expected.source) }
+            catch { throw StorageDeletionFailure(Task.isCancelled ? .cancelled : .unsupportedEntry) }
+        }
+        try active(planID)
+        if undoHistory != nil || trashLibrary != nil {
+            // Another item of this deletion failed: whatever has not reached the Trash stays.
+            guard !stopping.contains(planID) else { throw StorageDeletionFailure(.cancelled) }
+            let original = try TrashRestoreOrigin(expected.source)
+            if let location = try await trash.trashReturningURL(expected.source) {
+                await undoHistory?.recordTrash(original, at: location, group: planID)
+                completed.append(expected.source)
+                // The item is already in the Trash: its receipt is written even if the operation was cancelled.
+                if let trashLibrary { try await Task.detached { try trashLibrary.record(TrashedItem(origin: original, location: location)) }.value }
+            } else { completed.append(expected.source) }
+        } else {
+            guard !stopping.contains(planID) else { throw StorageDeletionFailure(.cancelled) }
+            try await trash.trash(expected.source)
+            completed.append(expected.source)
+        }
+    }
+    /// How many local items go to the Trash at the same time.
+    static let concurrentTrashItems = 8
+
+    /// Reads the local sources several at a time, keeping their positions. Each read stops at its
+    /// own limit; the plan adds the counts afterwards.
+    private static func localSnapshots(_ sources: [URL], limits: Limits) async throws -> [Int: DeletionLocalSnapshot] {
+        let local = sources.indices.filter { sources[$0].isFileURL }
+        guard !local.isEmpty else { return [:] }
+        // Every source is at least one item: a selection over the limit is refused before reading.
+        guard sources.count <= limits.entries else { throw StorageDeletionFailure(.limitExceeded) }
+        return try await withThrowingTaskGroup(of: (Int, DeletionLocalSnapshot).self) { group in
+            var pending = local.makeIterator(), result: [Int: DeletionLocalSnapshot] = [:]
+            var count = 0
+            func start() -> Bool {
+                guard let index = pending.next() else { return false }
+                // Each read may use only what the finished reads left of the limit.
+                let budget = Limits(entries: max(1, limits.entries - count), depth: limits.depth)
+                group.addTask { (index, try await offMain { try DeletionLocalSnapshot.capture(sources[index], limits: budget) }) }
+                return true
+            }
+            for _ in 0..<concurrentTrashItems where !start() { break }
+            while let (index, snapshot) = try await group.next() {
+                result[index] = snapshot
+                count += snapshot.items.count
+                guard count <= limits.entries else { throw StorageDeletionFailure(.limitExceeded) }
+                _ = start()
+            }
+            return result
         }
     }
 
@@ -262,7 +376,7 @@ public actor StorageDeletionService {
         try Self.cancel()
         guard !revoked.contains(id) else { throw StorageDeletionFailure(.notAuthorized) }
     }
-    private func inventory(client: CloudStorageClient, key: String) async throws -> [CloudObject] {
+    private func inventory(client: CloudStorageClient, key: String, limits: Limits) async throws -> [CloudObject] {
         try Self.key(key)
         if !key.hasSuffix("/") {
             guard let object = try await client.stat(key: key) else { return [] }
@@ -323,6 +437,38 @@ public actor StorageDeletionService {
             throw StorageDeletionFailure(.unsafePath)
         }
     }
+    private static let log = Logger(subsystem: "io.github.leoars.myexplorer", category: "deletion")
+    /// Says which part of a planned item changed before it went to the Trash, without its name.
+    private static func logChange(_ expected: DeletionLocalSnapshot, _ actual: DeletionLocalSnapshot, done: Int, total: Int, stage: String) {
+        var parts: [String] = []
+        if actual.source != expected.source { parts.append("source") }
+        if actual.ancestors != expected.ancestors { parts.append("ancestors") }
+        let missing = Set(expected.items.keys).subtracting(actual.items.keys).count
+        let extra = Set(actual.items.keys).subtracting(expected.items.keys).count
+        if missing > 0 { parts.append("missing=\(missing)") }
+        if extra > 0 { parts.append("extra=\(extra)") }
+        for (url, old) in expected.items {
+            guard let new = actual.items[url], new != old else { continue }
+            if new.inode != old.inode || new.device != old.device { parts.append("inode") }
+            if new.type != old.type { parts.append("type") }
+            if new.size != old.size { parts.append("size \(old.size)->\(new.size)") }
+            if new.mtime != old.mtime || new.mnano != old.mnano { parts.append("mtime \(new.mtime - old.mtime)s") }
+            if new.ctime != old.ctime || new.cnano != old.cnano { parts.append("ctime \(new.ctime - old.ctime)s") }
+            break
+        }
+        log.error("Deletion item changed (\(stage, privacy: .public)) after \(done, privacy: .public) of \(total, privacy: .public): \(parts.joined(separator: ", "), privacy: .public)")
+    }
+    /// Every folder above `path`, up to "/".
+    private static func ancestors(of path: String) -> [String] {
+        var result: [String] = []
+        var current = Substring(path)
+        while let slash = current.lastIndex(of: "/") {
+            current = current[..<slash]
+            result.append(current.isEmpty ? "/" : String(current))
+            if current.isEmpty { break }
+        }
+        return result
+    }
     private static func overlap(_ lhs: URL, _ rhs: URL) -> Bool {
         if lhs.isFileURL && rhs.isFileURL {
             return lhs.path == rhs.path || lhs.path.hasPrefix(rhs.path + "/") || rhs.path.hasPrefix(lhs.path + "/")
@@ -370,7 +516,17 @@ internal enum DeletionRemoteInventory {
     }
 }
 
-private struct DeletionStoredPlan: Sendable { let preview: StorageDeletionPlan; let roots: [DeletionRoot] }
+/// The items already gone, filled by items going to the Trash at the same time.
+private final class DeletionCompleted: @unchecked Sendable {
+    private let lock = NSLock()
+    private var urls: [URL] = []
+    func append(_ url: URL) { lock.lock(); urls.append(url); lock.unlock() }
+    var values: [URL] { lock.lock(); defer { lock.unlock() }; return urls }
+    var count: Int { lock.lock(); defer { lock.unlock() }; return urls.count }
+}
+private struct DeletionStoredPlan: Sendable {
+    let preview: StorageDeletionPlan; let roots: [DeletionRoot]; let limits: StorageDeletionService.Limits
+}
 private enum DeletionRoot: Sendable {
     case local(DeletionLocalSnapshot)
     case remote(URL, CloudConnection, String, [CloudObject])

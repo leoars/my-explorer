@@ -114,7 +114,7 @@ struct IconPen {
 
 enum ExplorerIcon: String, CaseIterable {
     case folder, text, document, pdf, sheet, slides, code, image, video, audio, archive, app, disk, file, back, up, refresh, home, downloads, forward, newTab, desktop, computer, search, iphone, cloud, cloudOrange, cloudBlue, cloudGreen, trash,
-         newItem, cut, copy, paste, rename, share, sort, view, previewPane, more, delete
+         newItem, cut, copy, paste, rename, share, sort, view, previewPane, more, delete, favorite, recent
 }
 
 @MainActor
@@ -429,6 +429,36 @@ enum PremiumIcons {
         p.lifted(deck, 0x8B96A8, dy: 0.6, blur: 1.1)
         p.vgrad(deck, 0xF7F9FC, 0xAEB9C9)
         p.solid(p.rr(13, 24.6, 6, 1.1, 0.55), rgb(0x6F7B8F, 0.55))
+        },
+        .favorite: { p in
+        var points: [(CGFloat, CGFloat)] = []
+        for i in 0..<10 {
+            let angle = -CGFloat.pi / 2 + CGFloat(i) * .pi / 5
+            let radius: CGFloat = i % 2 == 0 ? 13.2 : 5.6
+            points.append((16 + cos(angle) * radius, 17 + sin(angle) * radius))
+        }
+        let star = p.poly(points)
+        p.lifted(star, 0xC77700)
+        p.grad(star, [rgb(0xFFE680), rgb(0xFFC21A), rgb(0xF29A05)], CGPoint(x: 16, y: 4), CGPoint(x: 16, y: 29), locations: [0, 0.5, 1])
+        p.sheen(star, 0.32)
+        p.stroke(star, rgb(0xD98300, 0.85), 0.8)
+        },
+        .recent: { p in
+        let face = CGPath(ellipseIn: CGRect(x: 3.5, y: 3.5, width: 25, height: 25), transform: nil)
+        p.lifted(face, 0x1A56D6)
+        p.grad(face, [rgb(0x6DB1FF), rgb(0x1A56D6)], CGPoint(x: 16, y: 3.5), CGPoint(x: 16, y: 28.5))
+        let dial = CGPath(ellipseIn: CGRect(x: 6.3, y: 6.3, width: 19.4, height: 19.4), transform: nil)
+        p.grad(dial, [rgb(0xFFFFFF), rgb(0xE3ECF8)], CGPoint(x: 16, y: 6.3), CGPoint(x: 16, y: 25.7))
+        for i in 0..<12 where i % 3 == 0 {
+            let angle = CGFloat(i) * .pi / 6
+            p.solid(CGPath(ellipseIn: CGRect(x: 16 + sin(angle) * 7.6 - 0.7, y: 16 - cos(angle) * 7.6 - 0.7, width: 1.4, height: 1.4), transform: nil), rgb(0x8FA6CC))
+        }
+        let hands = CGMutablePath()
+        hands.move(to: CGPoint(x: 16, y: 9.8)); hands.addLine(to: CGPoint(x: 16, y: 16)); hands.addLine(to: CGPoint(x: 20.6, y: 18.6))
+        p.c.setLineCap(.round); p.c.setLineJoin(.round)
+        p.stroke(hands, rgb(0x1B2A4A), 1.9)
+        p.solid(CGPath(ellipseIn: CGRect(x: 14.8, y: 14.8, width: 2.4, height: 2.4), transform: nil), rgb(0x1A56D6))
+        p.sheen(face, 0.22)
         },
         .search: { p in
         let ring = CGMutablePath()

@@ -47,12 +47,13 @@ public actor TrashLibrary {
         return result
     }
 
-    private func receiptFile(_ location: URL) -> URL {
+    private nonisolated func receiptFile(_ location: URL) -> URL {
         let digest = SHA256.hash(data: Data(location.standardizedFileURL.path.utf8))
         return directory.appendingPathComponent(digest.map { String(format: "%02x", $0) }.joined() + ".json")
     }
 
-    func record(_ item: TrashedItem) throws {
+    /// Each receipt is a file of its own, so items going to the Trash together write theirs at once.
+    nonisolated func record(_ item: TrashedItem) throws {
         // Never persist the decrypted paths of a private, transient vault mount.
         guard !SecureFolderService.isSessionURL(item.origin.url) else { return }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
@@ -92,7 +93,12 @@ public actor TrashLibrary {
                 readableRoots.append(root)
                 let present = Set(urls.map { $0.standardizedFileURL.path })
                 for item in receiptsHere where !present.contains(item.location.standardizedFileURL.path) {
-                    try? fm.removeItem(at: receiptFile(item.location))
+                    // Receipts are written while items reach the Trash: a newer one for a reused
+                    // name may have replaced this stale one since the folder was read.
+                    let file = receiptFile(item.location)
+                    if let data = try? Data(contentsOf: file), let current = try? JSONDecoder().decode(TrashedItem.self, from: data),
+                       current.origin.item != item.origin.item { continue }
+                    try? fm.removeItem(at: file)
                 }
             } catch {
                 unreadable.append(root)

@@ -16,6 +16,7 @@ enum ExplorerStyle {
     static var preferences = DisplayPreferences()
     static var browserPreferences = BrowserViewPreferences()
     static var folderViewModes = FolderViewModes()
+    static var folderShortcuts = FolderShortcuts()
     static let accent = NSColor.systemBlue
     static func font(_ area: FontArea, offset: CGFloat = 0, weight: NSFont.Weight = .regular) -> NSFont {
         .systemFont(ofSize: max(9, CGFloat(preferences.fontSize(for: area)) + offset), weight: weight)

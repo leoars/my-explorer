@@ -22,7 +22,11 @@ final class FolderOutlineView: NSOutlineView {
     }
     override func draggingEnded(_ sender: any NSDraggingInfo) {
         dragInside = false
-        super.draggingEnded(sender)
+        // The method is optional and NSOutlineView does not implement it on every macOS: calling
+        // it unchecked ended every drag released over the tree with a crash.
+        if NSOutlineView.instancesRespond(to: #selector(NSDraggingDestination.draggingEnded(_:))) {
+            super.draggingEnded(sender)
+        }
     }
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
         dragInside = false
@@ -90,7 +94,16 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
     var onShowTrash: (() -> Void)?
     private let trashRoot = FolderNode(url: URL(string: "myexplorer-trash:///")!, title: L10n.text("trash.title"), symbol: "trash", isGroup: true)
     var onManageCloud: (() -> Void)?
-    private var roots: [FolderNode]
+    /// Whether a folder may be a favorite: a real folder of this Mac, outside protected folders.
+    var canBeFavorite: ((URL) -> Bool)?
+    /// The places that are always there, from the home folder to the Trash.
+    private var fixedRoots: [FolderNode]
+    /// The person's favorite folders and the folders opened most recently, above the places.
+    let favoritesRoot = FolderNode(url: URL(string: "myexplorer-favorites:///")!, title: L10n.text("tree.favorites"), symbol: "favorite", isGroup: true)
+    let recentsRoot = FolderNode(url: URL(string: "myexplorer-recents:///")!, title: L10n.text("tree.recents"), symbol: "recent", isGroup: true)
+    private var shortcutsShown: [FolderNode] = []
+    private var shortcutsExpandedOnce = Set<ObjectIdentifier>()
+    private var roots: [FolderNode] { shortcutsShown + fixedRoots }
     private let mobileRoot = FolderNode(url: URL(string: "myexplorer-devices:///")!, title: L10n.text("devices.title"), symbol: "iphone", isGroup: true)
     private var mobileDevices: AppleMobileDevices?
     var onSavedSearch: ((ExplorerSavedSearch) -> Void)?
@@ -121,7 +134,7 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
 
     init(home: URL) {
         cloudRoot = FolderNode(url: URL(string: "myexplorer-cloud:///")!, title: L10n.text("cloud.title"), symbol: "cloud.fill", isGroup: true)
-        roots = [
+        fixedRoots = [
             FolderNode(url: home, title: L10n.text("tree.home"), symbol: "house"),
             FolderNode(url: home.appendingPathComponent("Desktop"), title: L10n.text("tree.desktop"), symbol: "desktopcomputer"),
             FolderNode(url: home.appendingPathComponent("Downloads"), title: L10n.text("tree.downloads"), symbol: "arrow.down.circle"),
@@ -132,10 +145,10 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
             FolderNode(url: URL(fileURLWithPath: "/"), title: L10n.text("tree.computer"), symbol: "internaldrive"),
             FolderNode(url: URL(fileURLWithPath: "/Volumes"), title: L10n.text("tree.volumes"), symbol: "externaldrive")
         ]
-        roots.append(cloudRoot)
-        roots.append(searchRoot)
-        roots.append(mobileRoot)
-        roots.append(trashRoot)
+        fixedRoots.append(cloudRoot)
+        fixedRoots.append(searchRoot)
+        fixedRoots.append(mobileRoot)
+        fixedRoots.append(trashRoot)
         super.init()
         outline.contextMenuForRow = { [weak self] row in self?.contextMenu(for: row) }
         outline.onDragEnded = { [weak self] in self?.cancelDragHover() }
@@ -159,7 +172,87 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         outline.setAccessibilityIdentifier("explorer.tree")
         reloadCloudConnections()
         reloadSavedSearches()
+        reloadShortcuts()
         CloudAccounts.shared.onChange = { [weak self] in self?.reloadCloudConnections() }
+        NotificationCenter.default.addObserver(self, selector: #selector(shortcutsChanged), name: FolderShortcuts.didChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(presenceChanged), name: FolderPresence.didChange, object: nil)
+    }
+
+    @objc private func shortcutsChanged(_ notification: Notification) {
+        guard notification.object as AnyObject? === ExplorerStyle.folderShortcuts else { return }
+        reloadShortcuts()
+    }
+
+    @objc private func presenceChanged(_ notification: Notification) { reloadShortcuts() }
+
+    /// Rebuilds the two groups from the preferences, keeping the nodes (and so their open
+    /// branches) of the folders that are still there. Each group opens by itself the first time
+    /// it appears; after that it stays as the person left it.
+    ///
+    /// The recent folders do not change places while they are in use: a folder opened again stays
+    /// where it is (walking down the group with the keyboard, or clicking one row after another,
+    /// would otherwise make the rows jump), and only folders new to the group go on top. The full
+    /// order comes back when the tree is built again.
+    func reloadShortcuts() {
+        let shortcuts = ExplorerStyle.folderShortcuts
+        var recents = shortcuts.visibleRecents(exists: FolderPresence.shared.exists)
+        if let shown = recentsRoot.children?.map(\.url.explorerIdentity), !shown.isEmpty {
+            let current = Set(recents.map(\.explorerIdentity))
+            let staying = shown.filter(current.contains)
+            let fresh = recents.filter { !shown.contains($0.explorerIdentity) }
+            let byIdentity = Dictionary(recents.map { ($0.explorerIdentity, $0) }, uniquingKeysWith: { first, _ in first })
+            recents = fresh + staying.compactMap { byIdentity[$0] }
+        }
+        func fill(_ group: FolderNode, with urls: [URL]) {
+            let previous = Dictionary((group.children ?? []).map { ($0.url.explorerIdentity, $0) }, uniquingKeysWith: { first, _ in first })
+            let nodes = urls.map { url in
+                previous[url.explorerIdentity] ?? FolderNode(url: url, title: Self.displayName(url))
+            }
+            let kept = Set(nodes.map(ObjectIdentifier.init))
+            for node in previous.values where !kept.contains(ObjectIdentifier(node)) { node.stopObserving() }
+            group.children = nodes
+        }
+        fill(favoritesRoot, with: shortcuts.favorites)
+        fill(recentsRoot, with: recents)
+        // An empty favorites group stays, as the place to drop folders on; an empty recents one goes.
+        let shown = (shortcuts.showFavorites ? [favoritesRoot] : []) + (shortcuts.showRecents && !recents.isEmpty ? [recentsRoot] : [])
+        let selectedURL = (outline.item(atRow: outline.selectedRow) as? FolderNode)?.url
+        selecting = true
+        if shown.map(ObjectIdentifier.init) != shortcutsShown.map(ObjectIdentifier.init) {
+            for group in shortcutsShown where !shown.contains(where: { $0 === group }) { group.children?.forEach { $0.stopObserving() } }
+            shortcutsShown = shown
+            // Before the tree is on screen it has no rows to redo; reloading the whole outline then
+            // would also leave its one column at its first, narrow width.
+            if outline.window != nil { outline.reloadData() } else { outline.reloadItem(nil, reloadChildren: true) }
+        } else {
+            for group in shown { outline.reloadItem(group, reloadChildren: true) }
+        }
+        for group in shown where shortcutsExpandedOnce.insert(ObjectIdentifier(group)).inserted {
+            expandFromCode { outline.expandItem(group) }
+        }
+        selecting = false
+        if let selectedURL { selectIfVisible(selectedURL) }
+    }
+
+    /// The name the Finder shows for a folder (Documents in the person's language, say). Asked of
+    /// the system only inside the home folder: elsewhere, a volume that stopped answering could hold
+    /// the window back.
+    static func displayName(_ url: URL) -> String {
+        if url.path == "/" { return L10n.text("tree.computer") }
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        guard url.path.hasPrefix(home + "/") || url.path == home else { return url.lastPathComponent }
+        let name = FileManager.default.displayName(atPath: url.path)
+        return name.isEmpty ? url.lastPathComponent : name
+    }
+
+    /// Whether the node is one of the favorites or recent folders, or a folder inside one of them.
+    private func isInShortcutGroup(_ node: FolderNode) -> Bool {
+        var parent = outline.parent(forItem: node) as? FolderNode
+        while let current = parent {
+            if current === favoritesRoot || current === recentsRoot { return true }
+            parent = outline.parent(forItem: current) as? FolderNode
+        }
+        return false
     }
 
     func saveSearch(_ search: ExplorerSavedSearch) throws {
@@ -202,9 +295,17 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
             item.representedObject = search.id
             return menu
         }
-        guard row >= 0, let node = outline.item(atRow: row) as? FolderNode,
-              node.volume != nil || node.url.path == "/" && node.url.isFileURL else { return nil }
+        guard row >= 0, let node = outline.item(atRow: row) as? FolderNode, !node.isGroup else { return nil }
+        let favorite = favoriteItem(for: node)
+        guard node.volume != nil || node.url.path == "/" && node.url.isFileURL else {
+            guard let favorite else { return nil }
+            let menu = NSMenu()
+            menu.addItem(favorite)
+            ExplorerStyle.configureMenu(menu)
+            return menu
+        }
         let menu = NSMenu()
+        if let favorite { menu.addItem(favorite); menu.addItem(.separator()) }
         let item = menu.addItem(withTitle: L10n.text("command.properties"), action: #selector(volumeProperties(_:)), keyEquivalent: "")
         item.target = self
         item.representedObject = (node.url, node.volume)
@@ -216,6 +317,24 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         }
         ExplorerStyle.configureMenu(menu)
         return menu
+    }
+
+    /// "Add to favorites" or "Remove from favorites", for a folder that can be one.
+    private func favoriteItem(for node: FolderNode) -> NSMenuItem? {
+        guard node.url.isFileURL, node.savedSearch == nil, canBeFavorite?(node.url) ?? false else { return nil }
+        let isFavorite = ExplorerStyle.folderShortcuts.isFavorite(node.url)
+        let item = NSMenuItem(title: L10n.text(isFavorite ? "favorites.remove" : "favorites.add"),
+                              action: #selector(toggleFavorite(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = node.url
+        item.image = ExplorerStyle.symbol(isFavorite ? "star.slash" : "star", description: item.title)
+        return item
+    }
+
+    @objc private func toggleFavorite(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        let shortcuts = ExplorerStyle.folderShortcuts
+        if shortcuts.isFavorite(url) { shortcuts.removeFavorite(url) } else { shortcuts.addFavorite(url) }
     }
 
     @objc private func disconnectCloud(_ sender: NSMenuItem) {
@@ -261,11 +380,16 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         outline.collapseItem(nil, collapseChildren: true)
         outline.reloadData()
         selecting = false
+        shortcutsExpandedOnce.removeAll()
+        reloadShortcuts()
     }
 
     func relocalize() {
         let keys = ["tree.home", "tree.desktop", "tree.downloads", "tree.documents", "tree.pictures", "tree.music", "tree.videos", "tree.computer", "tree.volumes"]
-        for (node, key) in zip(roots, keys) { node.title = L10n.text(key) }
+        for (node, key) in zip(fixedRoots, keys) { node.title = L10n.text(key) }
+        favoritesRoot.title = L10n.text("tree.favorites")
+        recentsRoot.title = L10n.text("tree.recents")
+        for node in (favoritesRoot.children ?? []) + (recentsRoot.children ?? []) { node.title = Self.displayName(node.url) }
         mobileDevices?.relocalize()
         mobileRoot.title = L10n.text("devices.title")
         searchRoot.title = L10n.text("search.saved")
@@ -326,15 +450,20 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         outline.scrollRowToVisible(row)
     }
 
+    /// Selects the folder's row. Its place among the folders comes before a favorite or recent
+    /// shortcut to it, which is chosen only when the place is not open in the tree.
     func selectIfVisible(_ url: URL) {
         selecting = true
         defer { selecting = false }
+        var shortcut: Int?
         for row in 0..<outline.numberOfRows {
-            if let node = outline.item(atRow: row) as? FolderNode, node.url.explorerIdentity == url.explorerIdentity {
-                outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-                return
-            }
+            guard let node = outline.item(atRow: row) as? FolderNode, !node.isGroup,
+                  node.url.explorerIdentity == url.explorerIdentity else { continue }
+            if isInShortcutGroup(node) { shortcut = shortcut ?? row; continue }
+            outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            return
         }
+        if let shortcut { outline.selectRowIndexes(IndexSet(integer: shortcut), byExtendingSelection: false); return }
         outline.deselectAll(nil)
     }
 
@@ -348,18 +477,51 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
     func outlineView(_ outlineView: NSOutlineView, validateDrop info: any NSDraggingInfo, proposedItem item: Any?,
                      proposedChildIndex index: Int) -> NSDragOperation {
         trackDragHover(info)
+        if (item as? FolderNode) === favoritesRoot {
+            let folders = favoriteCandidates(info)
+            guard !folders.isEmpty else { return [] }
+            outlineView.setDropItem(favoritesRoot, dropChildIndex: index == NSOutlineViewDropOnItemIndex ? (favoritesRoot.children?.count ?? 0) : index)
+            // Reordering moves; anything new is added (a copy of the shortcut, never of the folder).
+            let allowed = FileDrop.allowedOperations(for: info)
+            let reorder = folders.allSatisfy(ExplorerStyle.folderShortcuts.isFavorite)
+            if reorder, allowed.contains(.move) { return .move }
+            return allowed.contains(.copy) ? .copy : allowed.contains(.move) ? .move : []
+        }
         guard let node = item as? FolderNode, !node.isGroup, node.savedSearch == nil else { return [] }
+        // A favorite dragged onto another favorite is being put in order, not moved into it: the
+        // drop goes between the two rows, never into the folder.
+        if outline.parent(forItem: node) as AnyObject? === favoritesRoot, let siblings = favoritesRoot.children,
+           let position = siblings.firstIndex(where: { $0 === node }) {
+            let dragged = FileDrop.readURLs(from: info)
+            if !dragged.isEmpty, dragged.allSatisfy(ExplorerStyle.folderShortcuts.isFavorite) {
+                let rect = outline.rect(ofRow: outline.row(forItem: node))
+                let point = outline.convert(info.draggingLocation, from: nil)
+                outlineView.setDropItem(favoritesRoot, dropChildIndex: point.y > rect.midY ? position + 1 : position)
+                return FileDrop.allowedOperations(for: info).contains(.move) ? .move : []
+            }
+        }
         outlineView.setDropItem(node, dropChildIndex: NSOutlineViewDropOnItemIndex)
         return FileDrop.operation(for: FileDrop.readURLs(from: info), to: node.url,
                                   allowed: FileDrop.allowedOperations(for: info))
     }
     func outlineView(_ outlineView: NSOutlineView, acceptDrop info: any NSDraggingInfo, item: Any?, childIndex index: Int) -> Bool {
+        if (item as? FolderNode) === favoritesRoot {
+            let folders = favoriteCandidates(info)
+            guard !folders.isEmpty else { return false }
+            let shortcuts = ExplorerStyle.folderShortcuts
+            return shortcuts.placeFavorites(folders, at: index == NSOutlineViewDropOnItemIndex ? shortcuts.favorites.count : index)
+        }
         guard let node = item as? FolderNode, !node.isGroup, node.savedSearch == nil else { return false }
         let urls = FileDrop.readURLs(from: info)
         let action = FileDrop.operation(for: urls, to: node.url, allowed: FileDrop.allowedOperations(for: info))
         guard action == .copy || action == .move else { return false }
         FileCommands.shared.transfer(urls, to: node.url, move: action == .move)
         return FileCommands.shared.task != nil
+    }
+
+    /// The dragged items that can be favorites: folders of this Mac, outside protected folders.
+    private func favoriteCandidates(_ info: any NSDraggingInfo) -> [URL] {
+        FileDrop.readURLs(from: info).filter { $0.isFileURL && (canBeFavorite?($0) ?? false) }
     }
 
     private func cancelDragHover() {
@@ -541,6 +703,10 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
                     as? FileNameCell) ?? FileNameCell()
         cell.identifier = NSUserInterfaceItemIdentifier("folder")
         cell.label.stringValue = node.title
+        // A favorite whose folder is gone (renamed, moved, on a volume that is not there) stays,
+        // faded, until the person removes it.
+        let missingFavorite = outline.parent(forItem: node) as AnyObject? === favoritesRoot && !FolderPresence.shared.exists(node.url)
+        cell.alphaValue = missingFavorite ? 0.45 : 1
         cell.label.font = ExplorerStyle.font(.tree)
         let icon: ExplorerIcon
         switch node.symbol {
@@ -560,6 +726,8 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         case "cloud.azure": icon = .cloudBlue
         case "cloud.gcs": icon = .cloudGreen
         case "cloud.fill": icon = .cloud
+        case "favorite": icon = .favorite
+        case "recent": icon = .recent
         default: icon = .folder
         }
         // Same icon size as the file list, so the two panes read as one.
@@ -594,7 +762,7 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
             mobileDevices?.showWindow(nil)
             return
         }
-        if node === searchRoot { outline.expandItem(node); return }
+        if node === searchRoot || node === favoritesRoot || node === recentsRoot { outline.expandItem(node); return }
         if let saved = node.savedSearch { onSavedSearch?(saved); return }
         if node.isGroup { onNavigate?(node.url); return }
         onNavigate?(node.url)

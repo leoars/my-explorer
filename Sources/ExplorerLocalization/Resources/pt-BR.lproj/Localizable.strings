@@ -118,6 +118,13 @@
 "error.operation" = "Não foi possível concluir a operação. Verifique as permissões e o espaço disponível.";
 "view.prototype" = "Beta privado";
 "properties.path" = "Caminho";
+"properties.calculating" = "Calculando…";
+"properties.contents" = "Conteúdo";
+"properties.files.one" = "%@ arquivo";
+"properties.files.other" = "%@ arquivos";
+"properties.folders.one" = "%@ pasta";
+"properties.folders.other" = "%@ pastas";
+"properties.contents_format" = "%@, %@";
 
 // Archive operation errors
 "archive.error.invalidSelection" = "Selecione pelo menos um arquivo ou uma pasta local.";
@@ -179,6 +186,7 @@
 "cloud.transfer.items" = "%@ / %@";
 
 "storage.error.limitExceeded" = "A transferência excede o limite de 10.000 itens ou 64 níveis de pastas.";
+"deletion.limitExceeded" = "A exclusão excede o limite de %@ de itens ou 64 níveis de pastas.";
 
 "cloud.conflict.merge" = "Mesclar pastas";
 
@@ -607,3 +615,19 @@
 "window.front" = "Trazer Todas para a Frente";
 "menu.help" = "Ajuda";
 "help.readme" = "Ajuda do My Explorer";
+
+"tree.favorites" = "Preferidas";
+"tree.recents" = "Recentes";
+"favorites.add" = "Adicionar às preferidas";
+"favorites.remove" = "Remover das preferidas";
+"favorites.add_current" = "Adicionar esta pasta";
+"favorites.remove_current" = "Remover esta pasta";
+"menu.favorite_folders" = "Pastas preferidas";
+"menu.recent_folders" = "Pastas recentes";
+"recents.clear" = "Limpar recentes";
+"shortcuts.empty" = "Nenhuma pasta";
+"options.shortcuts" = "Pastas recentes e preferidas";
+"options.show_favorites" = "Mostrar as pastas preferidas na árvore";
+"options.show_recents" = "Mostrar as pastas recentes na árvore";
+"options.recent_limit" = "Quantidade de pastas recentes:";
+"options.recents_help" = "Pastas protegidas, a Lixeira, buscas e pastas na nuvem nunca entram nas recentes. Arraste uma pasta para Preferidas na árvore para adicioná-la, ou dentro do grupo para mudar a ordem.";

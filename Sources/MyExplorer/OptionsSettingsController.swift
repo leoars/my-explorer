@@ -22,6 +22,9 @@ final class OptionsSettingsController: DialogWindowController {
     /// is used once.
     var onLanguageChange: ((AppLanguage) -> Void)?
     private let language = NSPopUpButton()
+    let showFavorites = NSButton(checkboxWithTitle: L10n.text("options.show_favorites"), target: nil, action: nil)
+    let showRecents = NSButton(checkboxWithTitle: L10n.text("options.show_recents"), target: nil, action: nil)
+    let recentLimit = NSPopUpButton()
     private let preferences: StartupPreferences
     private let sessionPreferences: SessionPreferences
 
@@ -94,7 +97,31 @@ final class OptionsSettingsController: DialogWindowController {
         language.setAccessibilityIdentifier("options.language")
         let languageRow = NSStackView(views: [NSTextField(labelWithString: L10n.text("language.label")), language])
         languageRow.spacing = 10
-        let stack = NSStackView(views: [languageRow, restoreTabs, tabsHelp, restoreFolder, help, expandTree, expandTreeHelp, autoplayMedia, autoplayHelp, confirmDeletion, updateControls, updateStatus, fonts, master])
+        // Favorite and recent folders: what the tree shows and how many recent folders it keeps.
+        let shortcuts = ExplorerStyle.folderShortcuts
+        let shortcutsTitle = NSTextField(labelWithString: L10n.text("options.shortcuts"))
+        shortcutsTitle.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+        showFavorites.target = self; showFavorites.action = #selector(shortcutsChanged)
+        showFavorites.state = shortcuts.showFavorites ? .on : .off
+        showFavorites.setAccessibilityIdentifier("options.showFavorites")
+        showRecents.target = self; showRecents.action = #selector(shortcutsChanged)
+        showRecents.state = shortcuts.showRecents ? .on : .off
+        showRecents.setAccessibilityIdentifier("options.showRecents")
+        recentLimit.addItems(withTitles: FolderShortcuts.recentLimits.map { NumberFormatter.localizedString(from: NSNumber(value: $0), number: .none) })
+        recentLimit.selectItem(at: FolderShortcuts.recentLimits.firstIndex(of: shortcuts.recentLimit) ?? 0)
+        recentLimit.target = self; recentLimit.action = #selector(recentLimitChanged)
+        recentLimit.isEnabled = shortcuts.showRecents
+        recentLimit.setAccessibilityLabel(L10n.text("options.recent_limit"))
+        recentLimit.setAccessibilityIdentifier("options.recentLimit")
+        let clearRecents = NSButton(title: L10n.text("recents.clear"), target: self, action: #selector(clearRecentFolders))
+        clearRecents.setAccessibilityIdentifier("options.clearRecents")
+        let limitRow = NSStackView(views: [NSTextField(labelWithString: L10n.text("options.recent_limit")), recentLimit, clearRecents])
+        limitRow.spacing = 10
+        let recentsHelp = NSTextField(wrappingLabelWithString: L10n.text("options.recents_help"))
+        recentsHelp.textColor = .secondaryLabelColor
+        let shortcutsSection = NSStackView(views: [shortcutsTitle, showFavorites, showRecents, limitRow, recentsHelp])
+        shortcutsSection.orientation = .vertical; shortcutsSection.alignment = .leading; shortcutsSection.spacing = 8
+        let stack = NSStackView(views: [languageRow, restoreTabs, tabsHelp, restoreFolder, help, expandTree, expandTreeHelp, shortcutsSection, autoplayMedia, autoplayHelp, confirmDeletion, updateControls, updateStatus, fonts, master])
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 16
         stack.translatesAutoresizingMaskIntoConstraints = false
         let general = NSTabViewItem(identifier: "general")
@@ -133,8 +160,13 @@ final class OptionsSettingsController: DialogWindowController {
             help.widthAnchor.constraint(equalTo: stack.widthAnchor),
             tabsHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
             expandTreeHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            autoplayHelp.widthAnchor.constraint(equalTo: stack.widthAnchor)
+            autoplayHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            recentsHelp.widthAnchor.constraint(equalTo: stack.widthAnchor)
         ])
+        // Tall enough for everything the General tab holds, in any language and font size.
+        generalView.layoutSubtreeIfNeeded()
+        let needed = stack.fittingSize.height + 16 + 16 + 12 + 12 + 40
+        if needed > window.frame.height { window.setContentSize(NSSize(width: window.frame.width, height: needed)) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     @objc private func checkForUpdates() { if let window { updater?.checkNow(from: window) } }
@@ -157,6 +189,17 @@ final class OptionsSettingsController: DialogWindowController {
         restoreFolder.isEnabled = !sessionPreferences.restoreTabs
         onChange?()
     }
+    @objc private func shortcutsChanged(_ sender: NSButton) {
+        let shortcuts = ExplorerStyle.folderShortcuts
+        if sender === showFavorites { shortcuts.showFavorites = sender.state == .on }
+        if sender === showRecents { shortcuts.showRecents = sender.state == .on }
+        recentLimit.isEnabled = shortcuts.showRecents
+    }
+    @objc private func recentLimitChanged(_ sender: NSPopUpButton) {
+        guard FolderShortcuts.recentLimits.indices.contains(sender.indexOfSelectedItem) else { return }
+        ExplorerStyle.folderShortcuts.recentLimit = FolderShortcuts.recentLimits[sender.indexOfSelectedItem]
+    }
+    @objc private func clearRecentFolders(_ sender: Any?) { ExplorerStyle.folderShortcuts.clearRecents() }
     @objc private func configureMaster(_ sender: Any?) { onMasterPassword?() }
     @objc private func connectAssistant() { onConnectAssistant?() }
     @objc private func showFonts(_ sender: Any?) { onShowFonts?() }

@@ -130,6 +130,8 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     private var contextEntries: [FileEntry] = []
     private var renderedTabID: UUID?
     private var renderedPath: String?
+    /// The folder last recorded as a recent folder, so that one stay is recorded once.
+    private var lastRecordedVisit: String?
     private var rendering = false
     private var restoringLayout = true
     private var presentationSaveTask: Task<Void, Never>?
@@ -181,6 +183,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             self.forceGitRefresh = true
         }
         tree.onNavigate = { [weak self] url in self?.navigate(.visit(url)) }
+        tree.canBeFavorite = { [weak self] url in self?.canKeepAsShortcut(url) ?? false }
         systemVolumes.start()
         tree.onDisconnectCloud = { [weak self] id in self?.promptToDisconnect(id) }
         tree.onRemoveMount = { [weak self] mount in self?.systemVolumes.remove(mount) }
@@ -920,6 +923,29 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         SearchTagEditor.present(urls: commandEntries(sender).map(\.url), owner: window)
     }
 
+    /// Folders that may be kept as favorites and recent folders: real folders of this Mac, but not
+    /// a protected folder (open or locked), nor anything inside an open one, nor the Trash.
+    func canKeepAsShortcut(_ url: URL) -> Bool {
+        guard url.isFileURL, !FolderShortcuts.isExcludedPlace(url), !SecureFolderService.isSessionURL(url) else { return false }
+        if secureFolders?.isInsideUnlockedVault(url) == true || SecureFolderService.isVault(url) { return false }
+        return FolderShortcuts.folderExists(url)
+    }
+
+    /// Adds the folder open in the list to the favorites, or takes it out.
+    @objc func toggleCurrentFolderFavorite(_ sender: Any?) {
+        let url = session.history.current.url
+        let shortcuts = ExplorerStyle.folderShortcuts
+        if shortcuts.isFavorite(url) { shortcuts.removeFavorite(url) }
+        else if canKeepAsShortcut(url) { shortcuts.addFavorite(url) }
+    }
+
+    @objc private func toggleFavoriteEntry(_ sender: Any?) {
+        guard let url = commandEntries(sender).first?.url else { return }
+        let shortcuts = ExplorerStyle.folderShortcuts
+        if shortcuts.isFavorite(url) { shortcuts.removeFavorite(url) }
+        else if canKeepAsShortcut(url) { shortcuts.addFavorite(url) }
+    }
+
     func navigate(_ action: NavigationAction, revealing file: URL? = nil) {
         endInlineRename()
         // Prevent accidental actions on stale rows while a new destination is pending.
@@ -1025,6 +1051,10 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             return
         }
         progress.stopAnimation(nil)
+        if session.failure == nil, lastRecordedVisit != url.explorerIdentity {
+            lastRecordedVisit = url.explorerIdentity
+            if canKeepAsShortcut(url) { ExplorerStyle.folderShortcuts.recordVisit(url) }
+        }
         gitState.update(directory: url, entries: session.entries, force: forceGitRefresh)
         forceGitRefresh = false
     }
@@ -1044,7 +1074,8 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
 
     private func rebuildRows(selection: Set<String>, scroll: Double? = nil) {
         let query = filter.stringValue
-        let entries = session.entries.filter { query.isEmpty || $0.name.localizedStandardContains(query) }
+        let nameFilter = NameFilter(query)
+        let entries = session.entries.filter { nameFilter.matches($0.name) }
         let descriptor = table.sortDescriptors.first
         let localization = L10n.current
         visibleEntries = EntryOrdering.sorted(entries, by: EntrySortKey(rawValue: descriptor?.key ?? "name") ?? .name,
@@ -1144,10 +1175,12 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     /// the application's own). Called again whenever the menus are built anew.
     func rebuildMenuStrip() {
         for view in menuStrip.arrangedSubviews { menuStrip.removeArrangedSubview(view); view.removeFromSuperview() }
-        for item in (NSApp.mainMenu?.items ?? []).dropFirst() {
+        // The application's own menu comes first, under the application's name: Options, updates,
+        // hiding and quitting have no other place in the window.
+        for (index, item) in (NSApp.mainMenu?.items ?? []).enumerated() {
             guard let menu = item.submenu, !item.isHidden else { continue }
             let button = MenuStripButton()
-            button.title = item.title
+            button.title = index == 0 ? "My Explorer" : item.title
             button.font = ExplorerStyle.font(.menus)
             button.stripMenu = menu
             button.setAccessibilityLabel(item.title)
@@ -1653,6 +1686,10 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         renderSession()
     }
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(toggleCurrentFolderFavorite(_:)) {
+            let url = session.history.current.url
+            return ExplorerStyle.folderShortcuts.isFavorite(url) || canKeepAsShortcut(url)
+        }
         if menuItem.action == #selector(toggleFileExtensions) {
             menuItem.state = ExplorerStyle.preferences.showFileExtensions ? .on : .off
         }
@@ -1754,6 +1791,11 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             menu.addItem(.separator())
             item(contextEntries.count == 1 && !contextEntries[0].url.isFileURL && !contextEntries[0].canNavigate ? "cloud.open_copy" : "command.open", #selector(openSelected), "arrow.up.forward.square")
             item("command.open_new_tab", #selector(openSelectedInNewTab), "plus.square.on.square")
+            if contextEntries.count == 1, let entry = contextEntries.first, entry.isDirectory, !entry.isPackage,
+               entry.secureFolderURL == nil, canKeepAsShortcut(entry.url) {
+                let favorite = ExplorerStyle.folderShortcuts.isFavorite(entry.url)
+                item(favorite ? "favorites.remove" : "favorites.add", #selector(toggleFavoriteEntry), favorite ? "star.slash" : "star")
+            }
             item("command.open_with", #selector(openWith), "app")
             addSuiteEditors(to: menu)
             if entries.count == 1, let entry = entries.first, let state = entry.iCloudAvailability, entry.secureFolderURL == nil {
@@ -1902,7 +1944,8 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             }
             alert.layout()
         }
-        alert.beginSheetModal(for: window) { _ in query.cancel() }
+        let escape = alert.closingOnEscape(over: window)
+        alert.beginSheetModal(for: window) { _ in escape.stop(); query.cancel() }
     }
 
     func showGitMessage(_ message: String) {

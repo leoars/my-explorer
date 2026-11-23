@@ -267,14 +267,25 @@ final class FileCommands: NSObject, NSWindowDelegate {
     func trash(_ entries: [FileEntry]) {
         guard !shuttingDown, !entries.isEmpty else { return }
         run("command.delete") {
-            let plan = try await AppAutomation.deletion.plan(sources: entries.map(\.url), recursive: true)
+            let plan = try await AppAutomation.deletion.plan(sources: entries.map(\.url), recursive: true, entryLimit: Self.deletionLimit)
+            let throttle = ProgressThrottle(interval: 0.05)
             guard await self.confirmDeletion(count: plan.itemCount) else { await AppAutomation.deletion.discard(planID: plan.id); throw CancellationError() }
-            _ = try await AppAutomation.files.executeDeletion(planID: plan.id, using: AppAutomation.deletion, recordUndo: true, authorizationCheck: { _ in !Task.isCancelled })
+            _ = try await AppAutomation.files.executeDeletion(planID: plan.id, using: AppAutomation.deletion, recordUndo: true,
+                // At most 20 updates a second: smooth to watch, while one hop to the main thread per
+                // item would slow a large deletion.
+                progress: { completed, total in
+                    guard throttle.due(final: completed == total) else { return }
+                    await MainActor.run { self.updateCount(completed, of: total) }
+                },
+                authorizationCheck: { _ in !Task.isCancelled })
             let gone = Set(entries.map(\.id))
             await MainActor.run { self.owner?.itemsRemoved(gone) }
             return []
         }
     }
+    /// How many items one deletion from the window may hold: the most the move to the Trash accepts
+    /// (`LocalTransferRecovery`). Automation keeps its own, smaller limit.
+    static let deletionLimit = 100_000
     func compress(_ entries: [FileEntry], in directory: URL) {
         guard !shuttingDown, !entries.isEmpty, directory.isFileURL, entries.allSatisfy({ $0.url.isFileURL }) else { return }
         let base = entries.count == 1 ? entries[0].name : L10n.text("archive.default")
@@ -317,19 +328,50 @@ final class FileCommands: NSObject, NSWindowDelegate {
         alert.window.representedURL = entry.url
         alert.messageText = entry.name
         alert.icon = entry.url.isFileURL ? NSWorkspace.shared.icon(forFile: entry.url.path) : NSWorkspace.shared.icon(for: UTType(filenameExtension: entry.url.pathExtension) ?? .data)
-        let size = entry.isDirectory ? "—" : entry.size.map { L10n.current.bytes($0) } ?? "—"
-        let details = [
-            (L10n.text("column.kind"), L10n.current.fileKind(entry)),
-            (L10n.text("column.size"), size),
-            (L10n.text("column.modified"), entry.modified.map(L10n.current.date) ?? "—"),
-            (L10n.text("properties.path"), CloudAccounts.shared.address(for: entry.url))
-        ]
+        // A local folder (or package) has its size added up away from the main thread while the
+        // window is open; a file's size is already known from the listing, or read once here.
+        let measuresFolder = entry.isDirectory && entry.url.isFileURL && !entry.isSymbolicLink
+        var size = entry.size.map { L10n.current.bytes($0) } ?? "—"
+        var contents = L10n.text("properties.calculating")
+        if measuresFolder { size = contents }
+        var tagsText = ""
         let text = NSTextView()
+        func render() {
+            let details = [
+                (L10n.text("column.kind"), L10n.current.fileKind(entry)),
+                (L10n.text("column.size"), size)
+            ] + (measuresFolder ? [(L10n.text("properties.contents"), contents)] : []) + [
+                (L10n.text("column.modified"), entry.modified.map(L10n.current.date) ?? "—"),
+                (L10n.text("properties.path"), CloudAccounts.shared.address(for: entry.url))
+            ]
+            text.string = details.map { $0.0 + "\n" + $0.1 }.joined(separator: "\n\n") + tagsText
+        }
         text.isEditable = false
         text.drawsBackground = false
         text.font = .systemFont(ofSize: NSFont.systemFontSize)
-        text.string = details.map { $0.0 + "\n" + $0.1 }.joined(separator: "\n\n")
+        render()
         text.setAccessibilityLabel(L10n.text("command.properties"))
+        var measuring: Task<DirectorySize.Total?, Never>?
+        if measuresFolder || (entry.size == nil && entry.url.isFileURL && !entry.isDirectory) {
+            let url = entry.url
+            let work = Task.detached(priority: .utility) { () -> DirectorySize.Total? in
+                if measuresFolder { return DirectorySize.total(of: url, isCancelled: { Task.isCancelled }) }
+                return (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { DirectorySize.Total(bytes: Int64($0), files: 1, folders: 0) }
+            }
+            measuring = work
+            Task { [weak text] in
+                let total = await work.value
+                guard !work.isCancelled, text != nil else { return }
+                size = total.map { L10n.current.bytes($0.bytes) } ?? "—"
+                contents = total.map { total in
+                    let language = L10n.current
+                    return language.text("properties.contents_format",
+                        language.text("properties.files.\(language.pluralCategory(total.files))", language.number(total.files)),
+                        language.text("properties.folders.\(language.pluralCategory(total.folders))", language.number(total.folders)))
+                } ?? "—"
+                render()
+            }
+        }
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 440, height: 210))
         scroll.hasVerticalScroller = true
         text.frame.size.width = scroll.contentSize.width
@@ -344,11 +386,15 @@ final class FileCommands: NSObject, NSWindowDelegate {
             alert.addButton(withTitle: L10n.text("search.tags_edit"))
             Task { [weak text] in
                 let tags = try? await Task.detached(priority: .utility) { try FinderTags.read(entry.url) }.value
-                guard let tags, !tags.isEmpty, let text else { return }
-                text.string += "\n\n" + L10n.text("search.tags") + "\n" + tags.joined(separator: ", ")
+                guard let tags, !tags.isEmpty, text != nil else { return }
+                tagsText = "\n\n" + L10n.text("search.tags") + "\n" + tags.joined(separator: ", ")
+                render()
             }
         }
+        let escape = alert.closingOnEscape(over: window)
         alert.beginSheetModal(for: window) { response in
+            escape.stop()
+            measuring?.cancel()
             guard editableItem else { return }
             if response == .alertSecondButtonReturn { PermissionsDialog.present(for: entry, in: window) }
             if response == .alertThirdButtonReturn { SearchTagEditor.present(urls: [entry.url], owner: window) }
@@ -427,7 +473,7 @@ final class FileCommands: NSObject, NSWindowDelegate {
                 } else if let failure = error as? StorageDeletionFailure {
                     if !failure.completed.isEmpty || !failure.indeterminate.isEmpty { self.presentError(key: "deletion.partial") }
                     else if failure.reason == .changed { self.presentError(key: "deletion.changed") }
-                    else if failure.reason == .limitExceeded { self.presentError(key: "storage.error.limitExceeded") }
+                    else if failure.reason == .limitExceeded { self.presentError(message: L10n.format("deletion.limitExceeded", L10n.current.number(Self.deletionLimit))) }
                     else if failure.reason != .cancelled, let reason = failure.cloudReason { self.presentError(key: "cloud.error.\(reason.rawValue)") }
                     else if failure.reason != .cancelled { self.presentError(key: "error.operation") }
                 } else if let failure = error as? SharedFileFailure {
@@ -461,10 +507,14 @@ final class FileCommands: NSObject, NSWindowDelegate {
     private func revealPanel() {
         panelReveal?.cancel(); panelReveal = nil
         guard !shuttingDown, let panel, !panel.isVisible else { return }
+        // Attached to the window it works for: always in front of it, moving with it, and still
+        // in view while another application is active, without floating over other applications.
+        if let parent = owner?.window, parent.isVisible, panel.parent == nil { parent.addChildWindow(panel, ordered: .above) }
         panel.makeKeyAndOrderFront(nil)
     }
     private func hidePanel() {
         panelReveal?.cancel(); panelReveal = nil
+        if let panel { panel.parent?.removeChildWindow(panel) }
         panel?.close()
     }
     private func showProgress(_ title: String) {
@@ -487,6 +537,8 @@ final class FileCommands: NSObject, NSWindowDelegate {
             panel.contentView?.addSubview(pause); pauseButton = pause
         }
         panel.title = L10n.text("operation.title")
+        // A long operation stays in view when the person switches to another application.
+        panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.delegate = self
         DialogPlacement.center(panel)
@@ -513,7 +565,16 @@ final class FileCommands: NSObject, NSWindowDelegate {
     private func updateProgress(_ progress: StorageTransferProgress) {
         updateBytes(CloudTransferProgress(completedBytes: progress.bytesCompleted, totalBytes: progress.totalBytes), name: progress.currentSource?.lastPathComponent ?? "")
         guard !shuttingDown, operationKey != "operation.cancelling" else { return }
-        label?.stringValue = L10n.text(operationKey) + " · " + L10n.format("cloud.transfer.items", String(progress.completedItems), String(progress.totalItems))
+        label?.stringValue = L10n.text(operationKey) + " · " + L10n.format("cloud.transfer.items", L10n.current.number(progress.completedItems), L10n.current.number(progress.totalItems))
+    }
+    /// Items done out of the total, for operations that count items rather than bytes.
+    private func updateCount(_ completed: Int, of total: Int) {
+        guard !shuttingDown, isBusy, operationKey != "operation.cancelling", total > 0,
+              Date().timeIntervalSince(lastProgressUpdate) >= 0.05 || completed == total else { return }
+        lastProgressUpdate = Date()
+        progressBar?.stopAnimation(nil); progressBar?.isIndeterminate = false
+        progressBar?.minValue = 0; progressBar?.maxValue = Double(total); progressBar?.doubleValue = Double(completed)
+        label?.stringValue = L10n.text(operationKey) + " · " + L10n.format("cloud.transfer.items", L10n.current.number(completed), L10n.current.number(total))
     }
     private func confirmDeletion(count: Int) async -> Bool {
         guard !shuttingDown, !Task.isCancelled, let panel else { return false }
@@ -525,7 +586,7 @@ final class FileCommands: NSObject, NSWindowDelegate {
                 let decision = FileCommandDecision(continuation)
                 let alert = NSAlert(); alert.alertStyle = .warning
                 alert.messageText = L10n.text("deletion.confirm")
-                alert.informativeText = L10n.text("deletion.warning") + "\n" + L10n.format("deletion.count", String(count))
+                alert.informativeText = L10n.text("deletion.warning") + "\n" + L10n.format("deletion.count", L10n.current.number(count))
                 alert.addButton(withTitle: L10n.text("dialog.cancel"))
                 alert.addButton(withTitle: L10n.text("command.delete"))
                 conflictAlert = alert
@@ -636,10 +697,13 @@ final class FileCommands: NSObject, NSWindowDelegate {
         pauseButton?.isEnabled = false
     }
     private func presentError(key: String, details: String? = nil) {
+        presentError(message: L10n.text(key), details: details)
+    }
+    private func presentError(message: String, details: String? = nil) {
         guard !shuttingDown, onIdle == nil else { return }
         let alert = NSAlert()
         alert.messageText = L10n.text("operation.title")
-        alert.informativeText = L10n.text(key) + (details.map { "\n\n" + $0 } ?? "")
+        alert.informativeText = message + (details.map { "\n\n" + $0 } ?? "")
         if let window = owner?.window, window.isVisible { alert.beginSheetModal(for: window) }
         else if onIdle == nil { _ = DialogPlacement.runModal(alert.window) { alert.runModal() } }
     }
@@ -653,5 +717,42 @@ private final class FileCommandDecision<Value: Sendable> {
     func resolve(_ value: Value) {
         let pending = continuation; continuation = nil
         pending?.resume(returning: value)
+    }
+}
+
+/// An information sheet has no Cancel button for Escape to press; this makes Escape close it as
+/// OK does. Call `stop()` when the sheet ends.
+@MainActor
+struct EscapeCloser {
+    fileprivate let monitor: Any?
+    func stop() { if let monitor { NSEvent.removeMonitor(monitor) } }
+}
+
+extension NSAlert {
+    @MainActor
+    func closingOnEscape(over parent: NSWindow) -> EscapeCloser {
+        let sheet = window
+        return EscapeCloser(monitor: NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak parent] event in
+            guard event.keyCode == 53, event.window === sheet, let parent,
+                  event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.function, .numericPad]).isEmpty
+            else { return event }
+            parent.endSheet(sheet, returnCode: .alertFirstButtonReturn)
+            return nil
+        })
+    }
+}
+
+/// Lets progress through at most once per interval, from any thread; the last report always passes.
+final class ProgressThrottle: @unchecked Sendable {
+    private let interval: TimeInterval
+    private let lock = NSLock()
+    private var last = Date.distantPast
+    init(interval: TimeInterval) { self.interval = interval }
+    func due(final: Bool) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let now = Date()
+        guard final || now.timeIntervalSince(last) >= interval else { return false }
+        last = now
+        return true
     }
 }

@@ -2,8 +2,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mode="${1:-all}"
-if [[ "$mode" != all && "$mode" != git && "$mode" != shutdown && "$mode" != session && "$mode" != ocr && "$mode" != stability && "$mode" != buttons && "$mode" != eject && "$mode" != volumes && "$mode" != vault && "$mode" != dialogs && "$mode" != trash-undo && "$mode" != rename && "$mode" != deletion && "$mode" != search && "$mode" != address && "$mode" != clipboard && "$mode" != s3-drag ]]; then
-  echo "Usage: $0 [all|search|address|git|shutdown|session|ocr|stability|buttons|eject|volumes|vault|clipboard|dialogs|deletion|rename|trash-undo|s3-drag]" >&2
+if [[ "$mode" != all && "$mode" != git && "$mode" != shutdown && "$mode" != session && "$mode" != ocr && "$mode" != stability && "$mode" != buttons && "$mode" != eject && "$mode" != volumes && "$mode" != vault && "$mode" != dialogs && "$mode" != trash-undo && "$mode" != rename && "$mode" != deletion && "$mode" != search && "$mode" != address && "$mode" != clipboard && "$mode" != s3-drag && "$mode" != shortcuts ]]; then
+  echo "Usage: $0 [all|search|address|git|shutdown|session|ocr|stability|buttons|eject|volumes|vault|clipboard|dialogs|deletion|rename|trash-undo|s3-drag|shortcuts]" >&2
   exit 2
 fi
 if [[ "$mode" == all ]]; then
@@ -85,6 +85,10 @@ fi
 if [[ "$mode" == trash-undo || "$mode" == all ]]; then
   run_smoke --smoke-test --trash-undo-smoke --directory "$fixture_root"
   if [[ "$mode" == trash-undo ]]; then exit 0; fi
+fi
+if [[ "$mode" == shortcuts || "$mode" == all ]]; then
+  run_smoke --smoke-test --shortcuts-smoke --directory "$fixture_root"
+  if [[ "$mode" == shortcuts ]]; then exit 0; fi
 fi
 if [[ "$mode" == rename || "$mode" == all ]]; then
   run_smoke --smoke-test --inline-rename-smoke --directory "$fixture_root" --light

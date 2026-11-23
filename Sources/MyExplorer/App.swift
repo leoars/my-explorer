@@ -69,6 +69,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             FileCommands.shared.interruptionStore = OperationInterruptionStore(defaults: UserDefaults(suiteName: name)!)
             ExplorerStyle.browserPreferences = BrowserViewPreferences(defaults: UserDefaults(suiteName: name)!)
             ExplorerStyle.folderViewModes = FolderViewModes(defaults: UserDefaults(suiteName: name)!)
+            ExplorerStyle.folderShortcuts = FolderShortcuts(defaults: UserDefaults(suiteName: name)!)
+            // The graphical tests find the places of the tree by their rows; the two groups would
+            // push them down. The groups have their own test, which turns them on.
+            if !ProcessInfo.processInfo.arguments.contains("--shortcuts-smoke") {
+                ExplorerStyle.folderShortcuts.showFavorites = false
+                ExplorerStyle.folderShortcuts.showRecents = false
+            }
             // A smoke run must never read or modify real connections or Keychain credentials.
             CloudAccounts.shared = CloudAccounts(defaults: UserDefaults(suiteName: name)!, useKeychain: false)
             L10n.preferences.select(.portuguese)
@@ -87,12 +94,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         secureFolders.onConceal = { [weak self] roots in
             guard let self else { return }
             self.controller?.concealSecureFolders(roots)
+            ExplorerStyle.folderShortcuts.forgetRecents(inside: roots)
             func affected(_ url: URL) -> Bool { roots.contains { SecureFolderCommands.contains(url, in: $0) } }
             if self.mediaViewer?.usesFiles(where: affected) == true { self.mediaViewer?.close() }
             if self.ocrViewer?.usesFiles(where: affected) == true { self.ocrViewer?.close() }
             if self.ocrBatchViewer?.usesFiles(where: affected) == true { self.ocrBatchViewer?.close() }
         }
         if !automationHost && !smoke { secureFolders.observeSession() }
+        NotificationCenter.default.addObserver(self, selector: #selector(shortcutFoldersChanged), name: FolderShortcuts.didChange, object: nil)
         installMenu()
         let pathIndex = arguments.firstIndex(of: "--directory")
         let path = pathIndex.flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
@@ -306,6 +315,90 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         sessionPreferences.remember(tabs: state.tabs, activeIndex: state.activeIndex)
     }
 
+    /// The favorites and the recent folders in the Navigate menu. They are rebuilt whenever the
+    /// lists change, so that Control+1 to Control+9 always reach the first nine favorites.
+    private let favoriteFoldersMenu = NSMenu()
+    private let recentFoldersMenu = NSMenu()
+    private lazy var favoriteMenuUpdater = ShortcutMenuUpdater { [weak self] in self?.updateCurrentFolderItem() }
+    private lazy var recentMenuUpdater = ShortcutMenuUpdater { [weak self] in self?.rebuildRecentFoldersMenu() }
+    private var favoritesInMenu: [URL]?
+
+    private func shortcutFolderItem(_ url: URL) -> NSMenuItem {
+        let item = NSMenuItem(title: FolderTreeController.displayName(url), action: #selector(openShortcutFolder(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = url
+        item.toolTip = url.path
+        item.image = PremiumIcons.image(.folder, side: 16)
+        return item
+    }
+
+    private func emptyShortcutItem() -> NSMenuItem {
+        let item = NSMenuItem(title: L10n.text("shortcuts.empty"), action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        return item
+    }
+
+    /// The favorites carry Control+1 to Control+9, so their menu is ready before it is opened; it is
+    /// built again only when the favorites change, never while it is open on a visit.
+    private func rebuildShortcutMenus(force: Bool = false) {
+        let favorites = ExplorerStyle.folderShortcuts.favorites
+        recentFoldersMenu.delegate = recentMenuUpdater
+        if recentFoldersMenu.items.isEmpty { rebuildRecentFoldersMenu() }
+        guard force || favorites != favoritesInMenu else { return }
+        favoritesInMenu = favorites
+        favoriteFoldersMenu.removeAllItems()
+        for (index, url) in favorites.enumerated() {
+            let item = shortcutFolderItem(url)
+            if index < 9 {
+                item.keyEquivalent = String(index + 1)
+                item.keyEquivalentModifierMask = .control
+            }
+            favoriteFoldersMenu.addItem(item)
+        }
+        if favorites.isEmpty { favoriteFoldersMenu.addItem(emptyShortcutItem()) }
+        favoriteFoldersMenu.addItem(.separator())
+        let current = NSMenuItem(title: L10n.text("favorites.add_current"), action: #selector(ExplorerWindowController.toggleCurrentFolderFavorite(_:)), keyEquivalent: "")
+        current.tag = Self.currentFolderTag
+        favoriteFoldersMenu.addItem(current)
+        favoriteFoldersMenu.delegate = favoriteMenuUpdater
+        ExplorerStyle.configureMenu(favoriteFoldersMenu)
+    }
+
+    /// The recent folders change at every visit and carry no shortcut: built as the menu opens.
+    private func rebuildRecentFoldersMenu() {
+        recentFoldersMenu.removeAllItems()
+        let recents = ExplorerStyle.folderShortcuts.visibleRecents(exists: FolderPresence.shared.exists)
+        for url in recents { recentFoldersMenu.addItem(shortcutFolderItem(url)) }
+        if recents.isEmpty { recentFoldersMenu.addItem(emptyShortcutItem()) }
+        recentFoldersMenu.addItem(.separator())
+        let clear = recentFoldersMenu.addItem(withTitle: L10n.text("recents.clear"), action: #selector(clearRecentFolders(_:)), keyEquivalent: "")
+        clear.target = self
+        ExplorerStyle.configureMenu(recentFoldersMenu)
+    }
+
+    private static let currentFolderTag = 7_301
+
+    /// "Add this folder" or "Remove this folder", for the folder open in the window.
+    private func updateCurrentFolderItem() {
+        guard let item = favoriteFoldersMenu.item(withTag: Self.currentFolderTag) else { return }
+        let url = controller?.session.history.current.url
+        let favorite = url.map(ExplorerStyle.folderShortcuts.isFavorite) ?? false
+        item.title = L10n.text(favorite ? "favorites.remove_current" : "favorites.add_current")
+    }
+
+    @objc private func shortcutFoldersChanged(_ notification: Notification) {
+        guard notification.object as AnyObject? === ExplorerStyle.folderShortcuts else { return }
+        rebuildShortcutMenus()
+    }
+
+    @objc private func openShortcutFolder(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL, let controller else { return }
+        controller.window?.makeKeyAndOrderFront(nil)
+        controller.navigate(.visit(url))
+    }
+
+    @objc private func clearRecentFolders(_ sender: Any?) { ExplorerStyle.folderShortcuts.clearRecents() }
+
     private func installMenu() {
         let main = NSMenu()
         func menu(_ key: String) -> NSMenu {
@@ -398,6 +491,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         add(navMenu, plain("navigation.forward"), #selector(ExplorerWindowController.goForward(_:)), "]", own: false)
         add(navMenu, plain("navigation.up"), #selector(ExplorerWindowController.goUp(_:)), String(UnicodeScalar(NSUpArrowFunctionKey)!), own: false)
         add(navMenu, L10n.text("command.refresh"), #selector(refresh), "r")
+        navMenu.addItem(.separator())
+        // When the menus are built again (a new language), the two lists leave their old place first:
+        // a menu belongs to one menu at a time.
+        for menu in [favoriteFoldersMenu, recentFoldersMenu] {
+            menu.supermenu?.items.first { $0.submenu === menu }?.submenu = nil
+        }
+        navMenu.addItem(withTitle: L10n.text("menu.favorite_folders"), action: nil, keyEquivalent: "").submenu = favoriteFoldersMenu
+        navMenu.addItem(withTitle: L10n.text("menu.recent_folders"), action: nil, keyEquivalent: "").submenu = recentFoldersMenu
+        favoriteFoldersMenu.title = L10n.text("menu.favorite_folders")
+        recentFoldersMenu.title = L10n.text("menu.recent_folders")
+        rebuildRecentFoldersMenu()
+        rebuildShortcutMenus(force: true)
         navMenu.addItem(.separator())
         add(navMenu, L10n.text("command.edit_address"), #selector(focusAddress), "l")
         add(navMenu, L10n.text("search.title"), #selector(showFileSearch), "f", mask: [.command, .shift])
@@ -646,6 +751,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         [view] + view.subviews.flatMap { descendants(of: $0) }
     }
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(openShortcutFolder(_:)) { return controller != nil && NSApp.modalWindow == nil }
         if menuItem.action == #selector(checkForUpdates) { return controller?.window != nil && updater?.canCheckNow == true }
         if menuItem.action == #selector(batchOCR) {
             guard NSApp.keyWindow === controller?.window, let controller else { return false }
@@ -841,6 +947,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                     NSApp.terminate(nil)
                     return
                 }
+                if arguments.contains("--shortcuts-smoke") {
+                    try await testFolderShortcuts(root: root, browser: controller)
+                    print("SMOKE PASS: favorite and recent folders in the tree, context menus, Navigate menu with Control+1, stable recent order, options and excluded places")
+                    NSApp.terminate(nil)
+                    return
+                }
                 if arguments.contains("--inline-rename-smoke") {
                     try await testInlineRename(root: root, browser: controller)
                     print("SMOKE PASS: inline rename clicks, Enter, Escape, double-click, F2 and context menu")
@@ -880,7 +992,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 }
                 if arguments.contains("--git-smoke") {
                     try await testGitIntegration(root: root, arguments: arguments)
-                    print("SMOKE PASS: Git roots, tree/list statuses, branch/worktree, refresh and stale/cancelled requests")
+                    print("SMOKE PASS: Git roots, tree/list statuses, branch/worktree, refresh and stale/cancelled requests, folder properties and Escape")
                     NSApp.terminate(nil)
                     return
                 }
@@ -2998,6 +3110,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         guard let details = propertiesText(content), details.contains(L10n.text("column.modified")),
               details.contains(L10n.text("column.size")) else { throw SmokeFailure.failed("Incomplete file properties") }
         window.endSheet(sheet)
+        // A folder's size is added up while the window is open, and Escape closes the window.
+        guard let folder = browser.session.entries.first(where: { $0.name == "Nested" }) else {
+            throw SmokeFailure.failed("Missing folder properties fixture")
+        }
+        guard let folderTotal = DirectorySize.total(of: folder.url) else { throw SmokeFailure.failed("Folder size") }
+        let folderBytes = folderTotal.bytes
+        let folderContents = L10n.current.text("properties.contents_format",
+            L10n.current.text("properties.files.\(L10n.current.pluralCategory(folderTotal.files))", L10n.current.number(folderTotal.files)),
+            L10n.current.text("properties.folders.\(L10n.current.pluralCategory(folderTotal.folders))", L10n.current.number(folderTotal.folders)))
+        browser.rebuildContextMenu(tableMenu, entries: [folder])
+        guard let folderProperties = tableMenu.item(withTitle: L10n.text("command.properties")),
+              let folderSelector = folderProperties.action else { throw SmokeFailure.failed("Missing folder properties command") }
+        NSApp.sendAction(folderSelector, to: folderProperties.target, from: folderProperties)
+        guard let folderSheet = window.attachedSheet, let folderContent = folderSheet.contentView else {
+            throw SmokeFailure.failed("Folder properties window did not open")
+        }
+        func folderText(_ view: NSView) -> String? {
+            if let text = view as? NSTextView, text.string.contains(folder.url.path) { return text.string }
+            return view.subviews.lazy.compactMap { folderText($0) }.first
+        }
+        try await waitForCondition("Folder size in properties") {
+            guard let shown = folderText(folderContent) else { return false }
+            return shown.contains(L10n.text("column.size") + "\n" + L10n.current.bytes(folderBytes))
+                && shown.contains(L10n.text("properties.contents") + "\n" + folderContents)
+        }
+        guard let escape = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                            windowNumber: folderSheet.windowNumber, context: nil, characters: "\u{1b}",
+                                            charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53) else {
+            throw SmokeFailure.failed("Escape event")
+        }
+        NSApp.postEvent(escape, atStart: false)
+        try await waitForCondition("Escape closes properties") { window.attachedSheet == nil }
         let expected: [(String, GitStatusKind, Bool)] = [("clean.txt", .clean, false), ("modified.txt", .modified, false),
             ("staged.txt", .modified, false), ("new file.txt", .untracked, false), ("ignored.log", .ignored, false),
             ("conflict.txt", .conflicted, false), ("Nested", .modified, true), ("cache", .ignored, true), ("renamed 日本語.txt", .renamed, false)]
@@ -3671,8 +3815,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             commands.trash([FileEntry(url: file, name: file.lastPathComponent, isDirectory: false)])
             try await waitForCondition("delete prompt") { commands.hasPendingDecision }
             try choose("command.delete")
-            try await waitForCondition("trash recorded") { !commands.isBusy }
-            guard commands.undoKind == .trash, !FileManager.default.fileExists(atPath: file.path) else {
+            // The operation may not have started when the button returns, so wait for its result
+            // rather than for the commands to be idle.
+            do {
+                try await waitForCondition("trash recorded") {
+                    !commands.isBusy && commands.undoKind == .trash && !FileManager.default.fileExists(atPath: file.path)
+                }
+            } catch {
                 throw SmokeFailure.failed("Delete did not record local Trash URL")
             }
         }
@@ -3869,6 +4018,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         browser.window?.makeFirstResponder(browser.table)
         try await Task.sleep(for: .milliseconds(300))
         guard !browser.addressSuggestions.isVisible else { throw SmokeFailure.failed("Late suggestions after leaving address") }
+    }
+
+    private func testFolderShortcuts(root: URL, browser: ExplorerWindowController) async throws {
+        let shortcuts = ExplorerStyle.folderShortcuts
+        let tree = browser.tree, outline = tree.outline
+        func same(_ a: URL?, _ b: URL) -> Bool { a?.resolvingSymlinksInPath().path == b.resolvingSymlinksInPath().path }
+        func visit(_ url: URL) async throws {
+            browser.navigate(.visit(url))
+            try await waitForListing(browser)
+            try await waitForCondition("listing of \(url.lastPathComponent) shown") { same(browser.session.history.current.url, url) && !browser.session.isLoading }
+        }
+        func shown(_ group: FolderNode) -> [URL] { (group.children ?? []).map(\.url) }
+        let documents = root.appendingPathComponent("Documents"), downloads = root.appendingPathComponent("Downloads")
+        let archive = root.appendingPathComponent("Archive"), projects = documents.appendingPathComponent("Projects")
+        let trash = root.appendingPathComponent("Box/.Trash")
+        try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
+
+        // Both groups on: the favorites group stays even empty; the recent one appears with its first folder.
+        try await waitForListing(browser)
+        guard outline.item(atRow: 0) as AnyObject? === tree.favoritesRoot else { throw SmokeFailure.failed("Favorites group not on top") }
+        try await waitForCondition("first folder recorded") { same(shortcuts.visibleRecents().first, root) }
+        try await waitForCondition("recent group shown") { outline.row(forItem: tree.recentsRoot) >= 0 }
+
+        // Visits go on top; a folder opened again keeps its row in the tree while the group is in use.
+        try await visit(documents)
+        try await visit(downloads)
+        guard same(shortcuts.visibleRecents().first, downloads) else { throw SmokeFailure.failed("Last visit not first") }
+        try await visit(documents)
+        let order = shown(tree.recentsRoot)
+        guard order.count == 3, same(order[0], downloads), same(order[1], documents), same(order[2], root) else {
+            throw SmokeFailure.failed("Recent rows moved while in use: \(order.map(\.lastPathComponent))")
+        }
+
+        // The list's context menu adds a folder; the Navigate menu adds the open one.
+        try await visit(root)
+        guard let menu = browser.table.menu else { throw SmokeFailure.failed("Missing list menu") }
+        browser.rebuildContextMenu(menu, entries: [FileEntry(url: archive, name: "Archive", isDirectory: true)])
+        let add = menu.indexOfItem(withTitle: L10n.text("favorites.add"))
+        guard add >= 0 else { throw SmokeFailure.failed("Missing Add to favorites in the list menu") }
+        menu.performActionForItem(at: add)
+        try await visit(projects)
+        browser.toggleCurrentFolderFavorite(nil)
+        guard shortcuts.favorites.count == 2, same(shortcuts.favorites.first, archive), same(shortcuts.favorites.last, projects),
+              shown(tree.favoritesRoot).count == 2 else { throw SmokeFailure.failed("Favorites not added in order: \(shortcuts.favorites.map(\.path)) shown \(shown(tree.favoritesRoot).count) archive \(archive.path) projects \(projects.path)") }
+
+        // Control+1 opens the first favorite from the Navigate menu.
+        let favoritesMenu = NSApp.mainMenu?.items.compactMap(\.submenu)
+            .compactMap { $0.items.first { $0.title == L10n.text("menu.favorite_folders") }?.submenu }.first
+        guard let first = favoritesMenu?.items.first, first.keyEquivalent == "1", first.keyEquivalentModifierMask == .control,
+              let index = favoritesMenu?.index(of: first) else { throw SmokeFailure.failed("Missing Control+1 favorite") }
+        favoritesMenu?.performActionForItem(at: index)
+        try await waitForListing(browser)
+        try await waitForCondition("first favorite opened") { same(browser.session.history.current.url, archive) }
+
+        // The tree's context menu removes a favorite.
+        guard let projectsNode = tree.favoritesRoot.children?.last, let treeMenu = outline.contextMenuForRow?(outline.row(forItem: projectsNode)) else {
+            throw SmokeFailure.failed("Missing favorite row menu")
+        }
+        let remove = treeMenu.indexOfItem(withTitle: L10n.text("favorites.remove"))
+        guard remove >= 0 else { throw SmokeFailure.failed("Missing Remove from favorites in the tree") }
+        treeMenu.performActionForItem(at: remove)
+        guard shortcuts.favorites.count == 1, shown(tree.favoritesRoot).count == 1 else { throw SmokeFailure.failed("Favorite not removed") }
+
+        // A Trash is never recorded.
+        try await visit(trash)
+        guard !shortcuts.visibleRecents().contains(where: { same($0, trash) }) else { throw SmokeFailure.failed("Trash recorded as recent") }
+
+        // The options hide each group; clearing empties the recent folders, and their group goes.
+        shortcuts.showRecents = false
+        guard outline.row(forItem: tree.recentsRoot) < 0 else { throw SmokeFailure.failed("Recent group still shown") }
+        shortcuts.showFavorites = false
+        guard (outline.item(atRow: 0) as? FolderNode)?.symbol == "house" else { throw SmokeFailure.failed("Places not back on top") }
+        shortcuts.showRecents = true
+        guard outline.row(forItem: tree.recentsRoot) >= 0 else { throw SmokeFailure.failed("Recent group not shown again") }
+        shortcuts.clearRecents()
+        guard outline.row(forItem: tree.recentsRoot) < 0, shortcuts.visibleRecents().isEmpty else { throw SmokeFailure.failed("Recent folders not cleared") }
     }
 
     private func testInlineRename(root: URL, browser: ExplorerWindowController) async throws {
@@ -4449,4 +4674,12 @@ struct MyExplorerApp {
         app.delegate = delegate
         withExtendedLifetime(delegate) { app.run() }
     }
+}
+
+/// Runs a closure just before a menu opens, to bring titles that depend on the window up to date.
+@MainActor
+final class ShortcutMenuUpdater: NSObject, NSMenuDelegate {
+    private let update: () -> Void
+    init(_ update: @escaping () -> Void) { self.update = update }
+    nonisolated func menuNeedsUpdate(_ menu: NSMenu) { MainActor.assumeIsolated { update() } }
 }
