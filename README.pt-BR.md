@@ -6,7 +6,7 @@
 
 My Explorer é um gerenciador de arquivos nativo para macOS. Ele reúne árvore de pastas, abas, barra de comandos e várias visualizações com a Lixeira, os volumes, o iCloud e os aplicativos do Mac.
 
-![Pasta de fotos em Ícones grandes, com miniaturas, uma foto selecionada e o painel de visualização aberto](docs/screenshots/navigation-pt-BR.png)
+![Pasta de fotos em Ícones grandes, com miniaturas e o painel de visualização aberto, ainda sem foto selecionada](docs/screenshots/navigation-pt-BR.png)
 
 ## Instalar
 

@@ -6,7 +6,7 @@
 
 My Explorer is a native file manager for macOS. It brings together a folder tree, tabs, a command bar and several view modes with the Trash, volumes, iCloud and the Mac's applications.
 
-![Photo folder in Large icons, with thumbnails, one photo selected and the preview pane open](docs/screenshots/navigation-en.png)
+![Photo folder in Large icons, with thumbnails and the preview pane open, no photo selected yet](docs/screenshots/navigation-en.png)
 
 ## Install
 
