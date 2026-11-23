@@ -2,88 +2,151 @@
 
 [English](README.md) · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Italiano](README.it.md)
 
-My Explorer è un gestore di file nativo per macOS. Unisce l’albero delle cartelle, le schede e la vista dettagliata di Esplora file di Windows ai volumi, al Cestino e alle applicazioni del Mac.
+**Suite My:** **My Explorer** · [My Notepad](https://github.com/leoars/My-Notepad/blob/main/docs/readme/it.md) · [My Paint](https://github.com/leoars/my-paint/blob/main/docs/readme/it.md)
 
-![Elenco in italiano filtrato per nome, con due schede aperte](docs/screenshots/navigation-it.png)
+My Explorer è un gestore di file nativo per macOS. Unisce albero delle cartelle, schede, barra dei comandi e diverse viste al Cestino, ai volumi, a iCloud e alle applicazioni del Mac.
 
-## Installare la versione 30
+![Cartella di foto in Icone grandi, con miniature, una foto selezionata e il riquadro di anteprima aperto](docs/screenshots/navigation-it.png)
 
-Apri il DMG, copia **My Explorer** in **Applicazioni**, espelli l’immagine disco e apri l’app. Questa versione è firmata con Developer ID e autenticata da Apple tramite notarizzazione. [Scarica per Mac](https://github.com/leoars/my-explorer/releases/latest)
+## Installare
 
-La versione 30 è la prima firmata con Developer ID e autenticata da Apple tramite notarizzazione, quindi macOS la apre senza il passaggio di sicurezza aggiuntivo. Dopo aver aperto l’app una volta, la sua icona compare nel Finder senza la cornice grigia. Se aggiorni da una versione precedente, macOS potrebbe chiedere di nuovo i permessi di privacy e l’accesso alle password che l’app ha salvato nel Portachiavi.
+Apri il DMG, copia **My Explorer** in **Applicazioni**, espelli l’immagine disco e apri l’app. Le versioni pubblicate sono firmate con Developer ID e autenticate da Apple tramite notarizzazione. [Scarica per Mac](https://github.com/leoars/my-explorer/releases/latest)
 
-## Compilare e installare
+Richiede macOS 14 o successivo, su Apple Silicon o Intel. Se aggiorni da una versione precedente, macOS potrebbe chiedere di nuovo i permessi di privacy e l’accesso alle password che l’app ha salvato nel Portachiavi.
 
-Servono macOS 14 o successivo e Xcode con Swift 6. Apri Terminale nella cartella che contiene `Package.swift` ed esegui i comandi seguenti. Per compilare sia per Apple Silicon sia per Intel, anteponi `MY_EXPLORER_ARCHITECTURES='arm64 x86_64'` al comando di compilazione.
+## Funzionalità
+
+### Navigazione
+
+- Albero delle cartelle con Cartella personale, Scrivania, Documenti, Download, Immagini, Musica, Video, Questo Mac, Volumi, Archiviazione cloud, Ricerche salvate, iPhone e iPad e Cestino.
+- Schede, ciascuna con cronologia, selezione, ordinamento e filtro propri. Il pulsante per una nuova scheda si trova subito dopo l’ultima.
+- Una sola barra degli indirizzi: mostra il percorso delle cartelle su cui puoi fare clic e diventa il percorso in formato testo quando ci fai clic, con suggerimenti mentre scrivi.
+- **Indietro**, **Avanti**, **Cartella superiore** e **Aggiorna**. L’elenco si aggiorna da solo quando i file cambiano dall’esterno.
+- **Filtra questa cartella** per nome e **Cerca file…** per nome, estensione, contenuto, data e tag, in questa cartella o in tutto il Mac. Le ricerche si possono salvare nell’albero.
+- Menu all’interno della finestra (File, Modifica, Visualizza, Navigazione, Lingua), oltre alla barra dei menu di macOS.
+
+### Viste e ordinamento
+
+- Cinque modalità, ricordate per ogni cartella: **Dettagli**, **Elenco**, **Icone piccole**, **Icone grandi** e **Galleria**.
+- In Icone grandi e nella Galleria, foto e video compaiono con la miniatura.
+- **Ordina** per nome, data di modifica, tipo o dimensioni, in ordine crescente o decrescente.
+- In Dettagli, trascina le intestazioni per cambiare l’ordine o la larghezza delle colonne.
+- **Elementi nascosti** ed **Estensioni nomi file** nel menu Visualizza.
+
+![Cartella di documenti in Dettagli, con le colonne Nome, Data di modifica, Tipo e Dimensioni](docs/screenshots/details-it.png)
+
+### Operazioni sui file
+
+- Barra dei comandi con **Nuovo**, **Taglia**, **Copia**, **Incolla**, **Rinomina**, **Condividi** ed **Elimina**.
+- Copia e spostamento con avanzamento, pausa e verifica. Se il nome esiste già: sostituire, unire le cartelle, conservare entrambi o ignorare.
+- **Annulla** per un massimo di 20 copie, spostamenti ed eliminazioni della sessione.
+- Rinomina sul posto con F2 o con un secondo clic lento sul nome.
+- Cestino nell’albero, con **Ripristina**, **Elimina definitivamente…** e **Svuota cestino…**.
+- **Comprimi in ZIP** ed **Estrai ZIP**.
+- Trascinamento all’interno dell’app, verso altre applicazioni e da esse.
+- **Proprietà** con percorso e permessi; su un volume, capacità totale, utilizzata e libera.
+- **Apri con…**, **Condividi…** (anche tramite AirDrop), **Modifica tag del Finder…** e **Copia percorso**.
+- Azioni rapide per immagini e PDF: ruotare, convertire in JPEG o PNG e creare un PDF.
+
+### Riquadro di anteprima e visualizzatore multimediale
+
+- Il riquadro di anteprima mostra immagini, video e audio con i controlli di riproduzione, i PDF con lo scorrimento delle pagine e gli altri tipi tramite Visualizzazione rapida (Quick Look).
+- Il visualizzatore apre immagini, video e audio in una finestra dedicata, scorre i file della cartella con le frecce e ingrandisce dall’1% all’800%.
+- Le immagini animate (WebP, GIF, APNG) vengono riprodotte.
+- La riproduzione automatica dei video si può disattivare in Opzioni.
+
+### Riconoscimento del testo (OCR)
+
+- **Estrai testo…** da immagini e PDF acquisiti da scanner, con rilevamento della lingua, per copiarlo o salvarlo come TXT.
+- **Crea PDF ricercabile…**, un file alla volta o in blocco fino a 50.
+- Tutto avviene sul Mac stesso.
+
+### iCloud
+
+- Stato di ogni elemento di iCloud Drive nell’elenco: sul Mac, solo online, in scaricamento o in caricamento.
+- Scaricare un file con un clic, con l’avanzamento sull’icona, e **Rimuovi il download da questo Mac**.
+- Scaricare tutto il contenuto di una cartella o solo la selezione, con conferma quando i file sono molti e una riserva di spazio su disco che non viene mai intaccata.
+
+### Archiviazione cloud
+
+- Amazon S3: collegare un bucket, sfogliare, copiare tra il Mac e il cloud, spostare, creare cartelle ed eliminare. Le credenziali restano nel Portachiavi di macOS.
+- Azure Blob Storage e Google Cloud Storage sono sperimentali.
+
+### Cartelle protette
+
+- **Proteggi cartella…** custodisce una cartella in una cassaforte cifrata con AES-256, che si apre con una password.
+- Blocco automatico quando la sessione viene bloccata, quando il Mac va in stop e all’uscita.
+
+### Git
+
+- Indicatori di stato sui file di un repository locale e il branch nella barra di stato.
+- **Visualizza modifiche** e **Visualizza cronologia**, aggiungere e togliere file dall’area di staging, commit, cambio di branch, fetch, pull e push, con il Git installato sul Mac.
+
+### Volumi e rete
+
+- Espellere i dischi, **Connetti al server…** tramite SMB e importare foto da un iPhone o iPad.
+
+### Opzioni e aspetto
+
+- Ripristinare le schede o l’ultima cartella all’apertura, confermare le eliminazioni, espandere l’albero fino alla cartella aperta e lingua dell’interfaccia.
+- Dimensioni dei caratteri separate per l’albero, l’elenco, i menu e le barre. Tema chiaro o scuro, in base al sistema.
+- Aggiornamenti: l’app può cercare nuove versioni all’apertura e installare quella che accetti.
+- Disponibile in portoghese, inglese, spagnolo, francese, tedesco, giapponese, coreano e italiano, con cambio immediato.
+
+### Automazione
+
+- Una riga di comando e un server MCP permettono a un assistente IA di lavorare nelle cartelle che autorizzi, per 24 ore. Sperimentale e disattivato per impostazione predefinita: **Opzioni → Integrazioni → Collega un assistente IA**.
+
+## Scorciatoie
+
+Le scorciatoie con Ctrl funzionano come già le conosci, anche nei campi di testo; lo stesso vale per le equivalenti con ⌘.
+
+| Tasti | Azione |
+| --- | --- |
+| Ctrl+T / Ctrl+W | Aprire o chiudere una scheda |
+| Ctrl+Tab / Ctrl+Shift+Tab | Scheda successiva o precedente |
+| Ctrl+L | Modificare l’indirizzo |
+| Ctrl+F / F3 | Filtrare la cartella corrente |
+| ⇧⌘F | Cercare file |
+| Ctrl+X / Ctrl+C / Ctrl+V | Tagliare, copiare e incollare |
+| Ctrl+Z | Annullare l’ultima operazione |
+| Ctrl+A | Selezionare tutto |
+| F2 | Rinominare |
+| Del (Fn+⌫) | Eliminare la selezione |
+| Enter / Backspace | Aprire l’elemento o tornare indietro |
+| Option+← / → / ↑ | Indietro, avanti o cartella superiore |
+| F5 / Ctrl+R | Aggiornare |
+| Ctrl+Shift+N | Nuova cartella |
+| Option+Enter | Proprietà |
+| Ctrl++ / Ctrl+- | Aumentare o ridurre i caratteri |
+| ⌘ , | Opzioni |
+
+## Parte della suite My
+
+My Explorer fa parte della suite My: tre applicazioni per macOS semplici e dirette, con i menu e le scorciatoie di sempre.
+
+- **My Explorer** (questo repository): gestore di file.
+- **[My Notepad](https://github.com/leoars/My-Notepad/blob/main/docs/readme/it.md)**: editor di testo semplice. Quando è installato, il doppio clic su un file .txt apre il testo in My Notepad e il menu contestuale si arricchisce di **Modifica con My Notepad**.
+- **[My Paint](https://github.com/leoars/my-paint/blob/main/docs/readme/it.md)**: editor di immagini semplice. Quando è installato, il menu contestuale delle immagini si arricchisce di **Modifica con My Paint**.
+
+## Installare dal codice sorgente
+
+Serve un Mac con macOS 14 o successivo e Xcode con Swift 6. Apri Terminale nella cartella che contiene `Package.swift` ed esegui i due comandi seguenti. Per generare un’app universale per Apple Silicon e Intel, imposta `MY_EXPLORER_ARCHITECTURES='arm64 x86_64'` prima del comando di compilazione.
 
 ```sh
 bash scripts/build-app.sh release
 open "dist/My Explorer.app"
 ```
 
-Per installare l’app, chiudila e copia `dist/My Explorer.app` in Applicazioni. Puoi anche aprire `Package.swift` in Xcode. Le build locali usano una firma ad hoc per impostazione predefinita.
+Per installare l’app, chiudila e copia `dist/My Explorer.app` in Applicazioni. Puoi anche aprire `Package.swift` in Xcode. La build locale usa una firma ad hoc per impostazione predefinita.
 
-## Esplorare e organizzare i file
+## Testare e contribuire
 
-Seleziona un volume nell’albero o digita un percorso nella barra degli indirizzi. Ogni scheda conserva cronologia, ordinamento e selezione. Il filtro cerca i nomi nella cartella aperta. Trascina le intestazioni per spostare le colonne o regolarne la larghezza.
-
-Copia, taglia e incolla file o cartelle. In caso di conflitto puoi sostituire l’elemento, conservarli entrambi o ignorarlo. Puoi annullare fino a 20 operazioni locali di copia o spostamento per sessione. Il menu contestuale permette di rinominare, condividere, creare archivi ZIP ed estrarli.
-
-Fai clic con il tasto destro su un file e scegli **Proprietà** per consultarne i dettagli. Su un volume nell’albero, ad esempio Macintosh HD, lo stesso comando mostra la capacità totale, lo spazio utilizzato e quello libero.
-
-Per rinominare un elemento nell’elenco, selezionalo, attendi un istante e fai nuovamente clic sul nome. Invio conferma ed Esc annulla. Il doppio clic apre l’elemento. F2 e il comando **Rinomina** aprono la finestra di dialogo.
-
-Nella sessione corrente, Ctrl+Z o ⌘Z ripristina gli elementi dal Cestino nella cartella originale. Se il nome è occupato, annulla per riprovare in seguito oppure conserva entrambi con un nome numerato.
-
-## Lavorare con Git
-
-Nei repository locali i simboli distinguono file modificati, nuovi, ignorati e in conflitto. Dal sottomenu **Git** puoi esaminare separatamente le modifiche nell’indice e nella copia di lavoro per la cartella o i file selezionati.
-
-![Repository di esempio in modalità scura con diversi stati Git](docs/screenshots/git-dark.png)
-
-Consulta la cronologia della selezione e aggiungi o rimuovi file dall’indice. Il commit include l’intero indice. Cambio di branch, fetch, pull e push utilizzano il Git installato sul Mac e richiedono conferma in Terminale.
-
-## Anteprima e riconoscimento del testo
-
-Attiva il pannello di anteprima e seleziona un file locale per visualizzarlo accanto all’elenco. Apri immagini, audio o video nel visualizzatore e usa le frecce per passare da un elemento all’altro. Gli strumenti OCR estraggono testo dalle immagini e dalle scansioni e consentono di creare PDF ricercabili.
-
-![Pannello laterale con l’anteprima del PNG selezionato](docs/screenshots/preview-light.png)
-
-## Cartelle protette e archiviazione cloud
-
-Scegli **Proteggi cartella** dal menu di una cartella locale. Al primo utilizzo crea una password principale e poi una password per la cartella. Per il backup, blocca la cartella e copia l’intero pacchetto `.myexplorervault`. Quando è sbloccata, altre applicazioni con i tuoi permessi possono accedere ai file.
-
-Nelle connessioni cloud puoi configurare un bucket S3 o Google Cloud Storage oppure un contenitore Azure Blob. Le credenziali sono nel Portachiavi di macOS. Puoi copiare tra Mac e cloud. Azure e Google Cloud restano sperimentali e sono testati con servizi simulati.
-
-## Opzioni e aggiornamenti
-
-Apri le **Opzioni** con ⌘ , per ripristinare le schede o l’ultima cartella all’avvio. La conferma di eliminazione è attiva per impostazione predefinita. Disattivandola, Canc sposta subito nel Cestino la selezione locale. Nel cloud l’eliminazione riguarda l’oggetto remoto.
-
-Nelle opzioni puoi abilitare la verifica all’avvio. Puoi aggiornare subito, rimandare di sette giorni o saltare la versione. **Verifica ora** considera anche le versioni rimandate o saltate. Il download inizia dopo la conferma.
-
-## Scorciatoie da tastiera
-
-| ⌨ | Scorciatoie da tastiera |
-| --- | --- |
-| ⌘ L | Modificare l’indirizzo |
-| ⌘ T / ⌘ W | Aprire o chiudere una scheda |
-| ⌃ Tab / ⌃ ⇧ Tab | Scheda successiva o precedente |
-| ⌘ F / F3 | Filtrare la cartella corrente |
-| F2 | Rinominare la selezione |
-| Del / Fn + ⌫ | Eliminare la selezione |
-| ⌘ Z / Ctrl+Z | Annullare un’operazione locale |
-
-## Automazione locale
-
-Per usare la CLI o un client MCP, apri **Opzioni → Integrazioni → Collega un assistente IA**, attiva l’automazione e autorizza le operazioni necessarie su una cartella. Il permesso scade dopo 24 ore. Tieni aperta l’app e importa nel client la configurazione generata in `mcp.json`.
-
-## Test e contributi
-
-Esegui i test Swift e, con la sessione grafica sbloccata, i test dell’interfaccia. Se segnali un problema, indica versione di macOS, architettura, passaggi per riprodurlo e risultato atteso. Usa file di esempio.
+Esegui i test Swift e, in una sessione grafica sbloccata, i test dell’interfaccia. Per segnalare un problema, indica la versione di macOS, l’architettura del Mac, i passaggi per riprodurlo e il risultato atteso. Usa file di esempio.
 
 ```sh
 swift test
 bash scripts/smoke-test.sh
 ```
 
-Distribuito con [licenza Apache 2.0](LICENSE). Per le librerie incluse consulta le [note sulle licenze di terze parti](THIRD_PARTY_NOTICES.md).
+Distribuito con [licenza Apache 2.0](LICENSE). Le attribuzioni delle librerie incluse si trovano nelle [note sulle licenze di terze parti](THIRD_PARTY_NOTICES.md).

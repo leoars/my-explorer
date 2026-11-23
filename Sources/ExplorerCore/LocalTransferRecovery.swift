@@ -22,6 +22,11 @@ public enum LocalTransferRecovery {
     private static func payload(_ info: stat) -> String {
         "io.github.leoars.myexplorer.local-journal:1:\(info.st_uid):\(info.st_dev):\(info.st_ino)\n"
     }
+    /// Whether this directory itself carries the recovery mark. A listing checks its own location
+    /// (and every ancestor) once with `isProtected`; for the children that are not links only this
+    /// remains to be asked, which spares walking the same ancestors again for each of them.
+    static func isMarkedDirectory(_ url: URL) -> Bool { marked(url) }
+
     private static func marked(_ root: URL) -> Bool {
         var info = stat()
         guard lstat(root.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,

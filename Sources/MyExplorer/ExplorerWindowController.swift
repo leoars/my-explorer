@@ -6,7 +6,13 @@ import ExplorerClipboard
 import UniformTypeIdentifiers
 
 private final class AddressField: NSTextField {
+    /// Called when the field takes the keyboard: the trail of folders gives way to the path.
+    var onFocus: (() -> Void)?
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func becomeFirstResponder() -> Bool {
+        onFocus?()
+        return super.becomeFirstResponder()
+    }
 }
 
 private final class ExplorerWindow: NSWindow {
@@ -20,6 +26,8 @@ private final class ExplorerWindow: NSWindow {
         }
         let previousClickSelectedAddress = selectedAddressOnClick
         selectedAddressOnClick = false
+        // The folders of the trail lie over the field: a click on one of them is theirs.
+        if contentView?.hitTest(event.locationInWindow) is NSButton { super.sendEvent(event); return }
         guard let field = addressField, field.isEnabled, attachedSheet == nil,
               event.modifierFlags.intersection([.control, .option, .shift, .command]).isEmpty,
               field.bounds.contains(field.convert(event.locationInWindow, from: nil)) else {
@@ -49,11 +57,21 @@ private final class ExplorerWindow: NSWindow {
 }
 
 @MainActor
-final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSMenuItemValidation, NSMenuDelegate, NSSplitViewDelegate {
+final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSCollectionViewDataSource, NSCollectionViewDelegate, NSSearchFieldDelegate, NSMenuItemValidation, NSMenuDelegate, NSSplitViewDelegate {
     let workspace: ExplorerWorkspace
     var session: DirectorySession { workspace.activeTab!.session }
     let table = ExplorerTableView()
     let fileScroll = NSScrollView()
+    /// The list in the view modes other than details; the table stays loaded behind it and
+    /// keeps the selection, so every command reads it from one place.
+    let grid = FileGridView()
+    let gridScroll = NSScrollView()
+    private let galleryStage = GalleryStage()
+    private(set) var viewMode: FileViewMode = .details
+    private var gridTop: NSLayoutConstraint!
+    private var gridHeight: NSLayoutConstraint!
+    /// Modes chosen inside unlocked protected folders: kept for this window only, never saved.
+    private var transientViewModes: [String: FileViewMode] = [:]
     let address: NSTextField = AddressField()
     let addressSuggestions = AddressSuggestions()
     let filter = NSSearchField()
@@ -85,8 +103,9 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     var onExtractText: ((URL) -> Void)?
     var onBatchOCR: (([URL]) -> Void)?
     private(set) var lastLocation: URL
-    let languagePicker = NSPopUpButton()
     let tabStrip = NSStackView()
+    /// "New tab" stands right after the last tab, where a new one will appear.
+    private var newTabButton: NSButton!
     private let tabScroll = NSScrollView()
     private let split = NSSplitView()
     private let previewPane = PreviewPaneController()
@@ -95,11 +114,17 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     private var backButton: NSButton!
     private var forwardButton: NSButton!
     private var upButton: NSButton!
-    private var hiddenButton: NSButton!
-    private var openButton: NSButton!
-    private var copyButton: NSButton!
-    private let extractButton = OutlinedButton()
-    private let searchablePDFButton = OutlinedButton()
+    /// The command bar: what is done to the selection, then how the folder is shown.
+    private let commandBar = NSStackView()
+    /// The menus inside the window, as in the other applications of the suite.
+    private let menuStrip = NSStackView()
+    private var selectionButtons: [(button: NSButton, needs: SelectionNeed)] = []
+    private var pasteButton: NSButton!
+    private let newButton = ToolbarMenuButton()
+    private let sortButton = ToolbarMenuButton()
+    private let viewButton = ToolbarMenuButton()
+    private let moreButton = ToolbarMenuButton()
+    private enum SelectionNeed { case any, oneLocal, shareable }
     private var visibleEntries: [FileEntry] = []
     private var inlineRename: (entry: FileEntry, field: NSTextField)?
     private var contextEntries: [FileEntry] = []
@@ -166,15 +191,21 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             if self.trashBrowser == nil { self.trashBrowser = TrashBrowserController() }
             self.trashBrowser?.showWindow(nil)
             self.trashBrowser?.refresh()
-            self.tree.selectIfVisible(self.session.history.current.url)
+            self.tree.show(self.session.history.current.url)
         }
         tree.onManageCloud = { [weak self] in self?.onManageCloud?() }
         previewPane.onExtractText = { [weak self] url in self?.onExtractText?(url) }
         table.openSelection = { [weak self] in self?.openSelected(nil) }
         table.goBack = { [weak self] in self?.goBack(nil) }
         installKeyboardNavigation()
+        rebuildMenuStrip()
         renderTabs()
         renderSession()
+        // The list has the keyboard from the start: the address shows the trail of folders
+        // until it is clicked.
+        window.contentView?.layoutSubtreeIfNeeded()
+        refitTrail()
+        showTrail(true)
         restoringLayout = false
     }
 
@@ -210,14 +241,26 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             tabStrip.heightAnchor.constraint(equalTo: tabScroll.contentView.heightAnchor),
             tabStrip.widthAnchor.constraint(greaterThanOrEqualTo: tabScroll.contentView.widthAnchor)
         ])
+        menuStrip.orientation = .horizontal; menuStrip.alignment = .centerY; menuStrip.spacing = 2
+        menuStrip.setAccessibilityIdentifier("explorer.menuStrip")
+        let stripSpacer = NSView()
+        stripSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        addBar(ExplorerStyle.stack([menuStrip, stripSpacer], spacing: 0), to: root, height: 28)
         let newTab = ExplorerStyle.button("plus", title: L10n.text("tab.new_tooltip"), target: self, action: #selector(newTab), outlined: true)
-        addBar(ExplorerStyle.stack([tabScroll, newTab], spacing: 6), to: root, height: 44)
+        newTabButton = newTab
+        addBar(ExplorerStyle.stack([tabScroll], spacing: 6), to: root, height: 44)
         addLine(to: root)
 
         backButton = ExplorerStyle.button("arrow.left", title: L10n.text("navigation.back"), target: self, action: #selector(goBack), outlined: true)
         forwardButton = ExplorerStyle.button("arrow.right", title: L10n.text("navigation.forward"), target: self, action: #selector(goForward), outlined: true)
         upButton = ExplorerStyle.button("arrow.up", title: L10n.text("navigation.up"), target: self, action: #selector(goUp), outlined: true)
         let refresh = ExplorerStyle.button("arrow.clockwise", title: L10n.text("navigation.refresh"), target: self, action: #selector(refresh), outlined: true)
+        // The navigation buttons carry the drawn icons; AppKit dims them by itself when disabled.
+        let drawn: [(NSButton?, ExplorerIcon)] = [(newTab, .newTab), (backButton, .back), (forwardButton, .forward), (upButton, .up), (refresh, .refresh)]
+        for case let (button?, icon) in drawn {
+            button.image = PremiumIcons.image(icon, side: 22, description: button.toolTip)
+            button.imageScaling = .scaleProportionallyDown
+        }
         address.placeholderString = L10n.text("address.placeholder")
         address.font = .systemFont(ofSize: 13)
         address.bezelStyle = .roundedBezel
@@ -233,22 +276,93 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         filter.setAccessibilityLabel(L10n.text("filter.accessibility"))
         filter.setAccessibilityIdentifier("explorer.filter")
         filter.widthAnchor.constraint(equalToConstant: 225).isActive = true
-        let navigation = ExplorerStyle.stack([backButton, forwardButton, upButton, refresh, address, filter], spacing: 6)
-        addBar(navigation, to: root, height: 54)
-
-        breadcrumbs.orientation = .horizontal; breadcrumbs.alignment = .centerY; breadcrumbs.spacing = 2
+        // One bar for the place: the trail of folders lies over the address field and gives way
+        // to the path in text when the field is clicked or takes the keyboard.
+        let place = NSView()
+        address.controlSize = .large
+        filter.controlSize = .large
+        breadcrumbs.orientation = .horizontal; breadcrumbs.alignment = .centerY; breadcrumbs.spacing = 1
         breadcrumbs.setAccessibilityLabel(L10n.text("breadcrumbs.accessibility"))
-        addBar(breadcrumbs, to: root, height: 32)
+        for view in [address, breadcrumbs] as [NSView] { view.translatesAutoresizingMaskIntoConstraints = false; place.addSubview(view) }
+        place.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        NSLayoutConstraint.activate([
+            address.leadingAnchor.constraint(equalTo: place.leadingAnchor), address.trailingAnchor.constraint(equalTo: place.trailingAnchor),
+            address.topAnchor.constraint(equalTo: place.topAnchor), address.bottomAnchor.constraint(equalTo: place.bottomAnchor),
+            breadcrumbs.leadingAnchor.constraint(equalTo: place.leadingAnchor, constant: 5),
+            breadcrumbs.trailingAnchor.constraint(equalTo: place.trailingAnchor, constant: -5),
+            breadcrumbs.centerYAnchor.constraint(equalTo: place.centerYAnchor)
+        ])
+        (address as? AddressField)?.onFocus = { [weak self] in self?.addressTookKeyboard() }
+        showTrail(true)
+        let navigation = ExplorerStyle.stack([backButton, forwardButton, upButton, refresh, place, filter], spacing: 6)
+        addBar(navigation, to: root, height: 54)
         addLine(to: root)
 
-        openButton = OutlinedButton(title: L10n.text("command.open"), image: ExplorerStyle.symbol("arrow.up.forward.square", description: L10n.text("command.open"))!,
-                              target: self, action: #selector(openSelected))
-        copyButton = OutlinedButton(title: L10n.text("command.copy_path"), image: ExplorerStyle.symbol("doc.on.doc", description: L10n.text("command.copy_path"))!,
-                              target: self, action: #selector(copyPath))
-        openButton.setAccessibilityIdentifier("explorer.command.open")
-        copyButton.setAccessibilityIdentifier("explorer.command.copyPath")
+        func command(_ icon: ExplorerIcon, _ key: String, _ action: Selector, id: String) -> NSButton {
+            let title = L10n.text(key).replacingOccurrences(of: "…", with: "")
+            let button = ExplorerStyle.button("circle", title: title, target: self, action: action, outlined: true)
+            button.image = PremiumIcons.image(icon, side: 22, description: title)
+            button.imageScaling = .scaleProportionallyDown
+            button.setAccessibilityIdentifier("explorer.command." + id)
+            return button
+        }
+        func menuButton(_ button: ToolbarMenuButton, _ icon: ExplorerIcon, _ key: String, id: String) {
+            let title = L10n.text(key)
+            button.title = title
+            button.image = PremiumIcons.image(icon, side: 20, description: title)
+            button.imagePosition = .imageLeading
+            button.imageScaling = .scaleProportionallyDown
+            button.toolTip = title
+            button.setAccessibilityLabel(title)
+            button.setAccessibilityIdentifier(id)
+            button.dropMenu.delegate = self
+            button.dropMenu.autoenablesItems = true
+        }
+        func item(_ menu: NSMenu, _ key: String, _ action: Selector, _ icon: ExplorerIcon? = nil, id: String? = nil) {
+            let entry = menu.addItem(withTitle: L10n.text(key), action: action, keyEquivalent: "")
+            entry.target = self
+            if let icon { entry.image = PremiumIcons.image(icon, side: 18) }
+            if let id { entry.identifier = NSUserInterfaceItemIdentifier(id) }
+        }
+        menuButton(newButton, .newItem, "command.new", id: "explorer.command.new")
+        item(newButton.dropMenu, "command.new_folder", #selector(newFolder), .folder)
+        item(newButton.dropMenu, "command.new_tab", #selector(newTab(_:)), .newTab)
+        let cut = command(.cut, "command.cut_files", #selector(cutFiles), id: "cut")
+        let copy = command(.copy, "command.copy_files", #selector(copyFiles), id: "copy")
+        pasteButton = command(.paste, "command.paste_files", #selector(pasteFiles), id: "paste")
+        let rename = command(.rename, "command.rename", #selector(renameInList), id: "rename")
+        let share = command(.share, "command.share", #selector(shareFiles), id: "share")
+        let delete = command(.delete, "command.delete", #selector(trashFiles), id: "delete")
+        selectionButtons = [(cut, .any), (copy, .any), (rename, .oneLocal), (share, .shareable), (delete, .any)]
+
+        menuButton(sortButton, .sort, "view.sort", id: "explorer.sortMenu")
+        for entry in Self.sortItems(target: self) { sortButton.dropMenu.addItem(entry) }
+        menuButton(viewButton, .view, "menu.view", id: "explorer.viewMenu")
+        for entry in Self.viewModeItems(target: self) { viewButton.dropMenu.addItem(entry) }
+        viewButton.dropMenu.addItem(.separator())
+        item(viewButton.dropMenu, "view.hidden", #selector(toggleHidden))
+        item(viewButton.dropMenu, "view.extensions", #selector(toggleFileExtensions))
+        item(viewButton.dropMenu, "preview.title", #selector(togglePreviewPane))
+
+        moreButton.title = ""
+        moreButton.image = PremiumIcons.image(.more, side: 20, description: L10n.text("menu.more"))
+        moreButton.imagePosition = .imageOnly
+        moreButton.toolTip = L10n.text("menu.more")
+        moreButton.setAccessibilityLabel(L10n.text("menu.more"))
+        moreButton.setAccessibilityIdentifier("explorer.moreMenu")
+        moreButton.dropMenu.delegate = self
+        moreButton.widthAnchor.constraint(equalToConstant: 46).isActive = true
+        item(moreButton.dropMenu, "command.copy_path", #selector(copyPath), .copy, id: "explorer.command.copyPath")
+        item(moreButton.dropMenu, "ocr.title", #selector(extractText), .text, id: "explorer.toolbar.extractText")
+        item(moreButton.dropMenu, "ocr.create_pdf", #selector(batchOCR), .pdf, id: "explorer.toolbar.searchablePDF")
+        moreButton.dropMenu.addItem(.separator())
+        item(moreButton.dropMenu, "font.title", #selector(showFontSettings))
+        item(moreButton.dropMenu, "options.title", #selector(showOptions))
+        item(moreButton.dropMenu, "cloud.manage", #selector(manageCloud), .cloud)
+
         previewButton.title = L10n.text("preview.title")
-        previewButton.image = ExplorerStyle.symbol("sidebar.right", description: previewButton.title)
+        previewButton.image = PremiumIcons.image(.previewPane, side: 22, description: previewButton.title)
+        previewButton.imageScaling = .scaleProportionallyDown
         previewButton.imagePosition = .imageOnly
         previewButton.setButtonType(.pushOnPushOff)
         previewButton.showsSelection = true
@@ -258,39 +372,23 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         previewButton.setAccessibilityIdentifier("explorer.preview.toggle")
         previewButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
         previewButton.heightAnchor.constraint(equalToConstant: 30).isActive = true
-        hiddenButton = NSButton(checkboxWithTitle: L10n.text("view.hidden"), target: self, action: #selector(toggleHidden))
+
+        func divider() -> NSView {
+            let line = NSBox(); line.boxType = .custom; line.borderWidth = 0
+            line.fillColor = .separatorColor
+            line.widthAnchor.constraint(equalToConstant: 1).isActive = true
+            line.heightAnchor.constraint(equalToConstant: 20).isActive = true
+            return line
+        }
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let mode = NSPopUpButton(frame: .zero, pullsDown: true)
-        mode.addItem(withTitle: L10n.text("menu.view"))
-        mode.menu?.addItem(withTitle: L10n.text("view.extensions"), action: #selector(toggleFileExtensions), keyEquivalent: "").target = self
-        mode.menu?.addItem(withTitle: L10n.text("preview.title"), action: #selector(togglePreviewPane), keyEquivalent: "").target = self
-        mode.menu?.addItem(withTitle: L10n.text("font.title"), action: #selector(showFontSettings), keyEquivalent: "").target = self
-        mode.menu?.addItem(withTitle: L10n.text("options.title"), action: #selector(showOptions), keyEquivalent: "").target = self
-        mode.menu?.addItem(withTitle: L10n.text("cloud.manage"), action: #selector(manageCloud), keyEquivalent: "").target = self
-        mode.setAccessibilityLabel(L10n.text("menu.view"))
-        mode.setAccessibilityIdentifier("explorer.viewMenu")
-        if let menu = mode.menu { ExplorerStyle.configureMenu(menu) }
-        languagePicker.addItems(withTitles: AppLanguage.allCases.map { $0 == .system ? L10n.text("language.system") : $0.nativeName })
-        languagePicker.selectItem(at: AppLanguage.allCases.firstIndex(of: L10n.preferences.selection) ?? 0)
-        languagePicker.target = self; languagePicker.action = #selector(languageChanged)
-        languagePicker.setAccessibilityLabel(L10n.text("language.accessibility"))
-        languagePicker.toolTip = L10n.text("language.label")
-        languagePicker.widthAnchor.constraint(equalToConstant: max(160, ExplorerStyle.preferences.fontSize(for: .bars) * 12)).isActive = true
-        extractButton.title = L10n.text("ocr.title")
-        extractButton.setAccessibilityIdentifier("explorer.toolbar.extractText")
-        extractButton.target = self
-        extractButton.action = #selector(extractText)
-        searchablePDFButton.title = L10n.text("ocr.create_pdf")
-        searchablePDFButton.setAccessibilityIdentifier("explorer.toolbar.searchablePDF")
-        searchablePDFButton.target = self
-        searchablePDFButton.action = #selector(batchOCR)
-        extractButton.isHidden = true
-        searchablePDFButton.isHidden = true
-        addBar(ExplorerStyle.stack([openButton, copyButton, extractButton, searchablePDFButton, spacer, previewButton]), to: root, height: 43)
-        let optionSpacer = NSView()
-        optionSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        addBar(ExplorerStyle.stack([languagePicker, optionSpacer, hiddenButton, mode], spacing: 14), to: root, height: 43)
+        for view in [newButton, divider(), cut, copy, pasteButton, rename, share, delete, spacer,
+                     sortButton, viewButton, previewButton, moreButton] as [NSView] { commandBar.addArrangedSubview(view) }
+        commandBar.orientation = .horizontal; commandBar.alignment = .centerY; commandBar.spacing = 6
+        commandBar.setCustomSpacing(10, after: newButton)
+        commandBar.setCustomSpacing(10, after: commandBar.arrangedSubviews[1])
+        for menu in toolbarMenus { ExplorerStyle.configureMenu(menu) }
+        addBar(commandBar, to: root, height: 46)
         addLine(to: root)
 
         errorLabel.maximumNumberOfLines = 2
@@ -324,9 +422,22 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         fileScroll.autohidesScrollers = true
         fileScroll.translatesAutoresizingMaskIntoConstraints = false
         details.addSubview(fileScroll)
+        configureGrid()
+        for view in [galleryStage, gridScroll] { view.translatesAutoresizingMaskIntoConstraints = false; details.addSubview(view) }
+        gridTop = gridScroll.topAnchor.constraint(equalTo: details.topAnchor)
+        gridHeight = gridScroll.heightAnchor.constraint(equalToConstant: FileGridMetrics.galleryStripHeight)
+        gridHeight.priority = NSLayoutConstraint.Priority(999) // a very short window squeezes the strip, not the layout
         message.translatesAutoresizingMaskIntoConstraints = false
         details.addSubview(message)
         NSLayoutConstraint.activate([
+            gridScroll.leadingAnchor.constraint(equalTo: details.leadingAnchor),
+            gridScroll.trailingAnchor.constraint(equalTo: details.trailingAnchor),
+            gridScroll.bottomAnchor.constraint(equalTo: details.bottomAnchor),
+            gridTop,
+            galleryStage.leadingAnchor.constraint(equalTo: details.leadingAnchor),
+            galleryStage.trailingAnchor.constraint(equalTo: details.trailingAnchor),
+            galleryStage.topAnchor.constraint(equalTo: details.topAnchor),
+            galleryStage.bottomAnchor.constraint(equalTo: gridScroll.topAnchor),
             fileScroll.leadingAnchor.constraint(equalTo: details.leadingAnchor),
             fileScroll.trailingAnchor.constraint(equalTo: details.trailingAnchor),
             fileScroll.topAnchor.constraint(equalTo: details.topAnchor),
@@ -383,12 +494,304 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         ])
     }
 
+    static let cloudColumn = NSUserInterfaceItemIdentifier("icloud")
+    private let cloudDownloads = ICloudDownloadMonitor()
+    /// Items this window saw finish downloading and the listing still reports as online-only: a
+    /// large folder takes seconds to read again, and the cloud must not come back meanwhile.
+    private var cloudDownloaded: Set<String> = []
+    /// Where a deletion left the list without a selection: the items that now stand just below
+    /// and just above what was removed, so the arrow keys carry on from there.
+    private var deletionAnchor: (below: String?, above: String?, folder: String)?
+    private lazy var cloudBatch = ICloudBatchDownloader(monitor: cloudDownloads)
+    private var cloudBatchPreparing = false
+    private var cloudBatchPrepare: Task<Void, Never>?
+    private var cloudBatchRefresh: Task<Void, Never>?
+
+    /// A narrow column with the iCloud state of each item; shown only in folders that are in iCloud.
+    private func makeCloudColumn() -> NSTableColumn {
+        let column = NSTableColumn(identifier: Self.cloudColumn)
+        let title = L10n.text("icloud.batch.header_tip")
+        column.title = ""
+        column.headerToolTip = title
+        column.width = 30; column.minWidth = 26; column.maxWidth = 44
+        column.headerCell = SortHeaderCell(textCell: "")
+        column.headerCell.lineBreakMode = .byTruncatingTail
+        column.headerCell.attributedStringValue = Self.cloudHeader(symbol: "icloud", description: title)
+        column.isHidden = true
+        return column
+    }
+
+    private static func cloudHeader(symbol name: String, description: String) -> NSAttributedString {
+        guard let symbol = ExplorerStyle.symbol(name, description: description)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)) else { return NSAttributedString(string: "") }
+        let attachment = NSTextAttachment()
+        attachment.image = symbol
+        let header = NSMutableAttributedString(attachment: attachment)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        header.addAttributes([.paragraphStyle: paragraph, .foregroundColor: NSColor.headerTextColor],
+                             range: NSRange(location: 0, length: header.length))
+        return header
+    }
+
+    /// The header of the iCloud column is a command: download everything, or stop while that runs.
+    private func updateCloudHeader() {
+        guard let column = table.tableColumn(withIdentifier: Self.cloudColumn) else { return }
+        let running = cloudBatch.isRunning
+        let tip = L10n.text(running ? "icloud.batch.stop_tip" : "icloud.batch.header_tip")
+        column.headerToolTip = tip
+        column.headerCell.attributedStringValue = Self.cloudHeader(symbol: running ? "stop.circle" : "icloud", description: tip)
+        table.headerView?.needsDisplay = true
+    }
+
+    func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
+        guard tableColumn.identifier == Self.cloudColumn else { return }
+        if cloudBatch.isRunning { cloudBatch.stop(); return }
+        // A second click while the folders are still being looked through gives up.
+        if cloudBatchPreparing { cloudBatchPrepare?.cancel(); return }
+        let selected = selectedTableEntries()
+        startCloudBatch(selected.count > 1 ? selected : visibleEntries)
+    }
+
+    @objc private func downloadSelectionFromICloud(_ sender: Any?) { startCloudBatch(commandEntries(sender)) }
+    @objc private func downloadAllFromICloud(_ sender: Any?) { startCloudBatch(visibleEntries) }
+    @objc private func stopCloudBatch(_ sender: Any?) { cloudBatchPrepare?.cancel(); cloudBatch.stop() }
+
+    private func startCloudBatch(_ scope: [FileEntry]) {
+        guard !cloudBatch.isRunning, !cloudBatchPreparing, !session.blocksInteraction,
+              session.history.current.url.isFileURL, window != nil else { return }
+        cloudBatchPreparing = true
+        cloudBatchPrepare = Task { [weak self] in
+            await self?.prepareCloudBatch(scope)
+            guard let self else { return }
+            self.cloudBatchPreparing = false
+            self.cloudBatchPrepare = nil
+            if self.workspace.activeTab != nil { self.renderStatusText() }
+        }
+    }
+
+    /// Finds out what there is to download, asks what has to be asked (subfolders, a large
+    /// number of files, a disk without room for all of it) and starts the queue.
+    private func prepareCloudBatch(_ scope: [FileEntry]) async {
+        guard let window else { return }
+        let location = session.history.current.url, activeSession = session
+        let number: (Int) -> String = { $0.formatted(.number.locale(L10n.current.locale)) }
+        func ask(_ title: String, _ message: String, buttons: [String], style: NSAlert.Style = .informational) async -> Int {
+            let alert = NSAlert()
+            alert.alertStyle = style
+            alert.messageText = title
+            alert.informativeText = message
+            for button in buttons { alert.addButton(withTitle: button) }
+            let response = await alert.beginSheetModal(for: window)
+            return response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        }
+        let cancel = L10n.text("dialog.cancel")
+        var includeFolders = false
+        let folders = scope.filter(ICloudBatch.isFolder).count
+        if folders > 0 {
+            switch await ask(L10n.text("icloud.batch.subfolders_title"), L10n.format("icloud.batch.subfolders_message", number(folders)),
+                             buttons: [L10n.text("icloud.batch.include"), L10n.text("icloud.batch.files_only"), cancel]) {
+            case 0: includeFolders = true
+            case 1: break
+            default: return
+            }
+        }
+        renderStatusText()
+        let folderContents = includeFolders
+        let worker = Task.detached(priority: .userInitiated) {
+            (ICloudBatch.plan(scope, includingFolders: folderContents), ICloudBatch.volume(at: location))
+        }
+        var (items, volume) = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+        guard !Task.isCancelled, workspace.activeTab != nil, session === activeSession,
+              session.history.current.url == location, !cloudBatch.isRunning else { return }
+        guard !items.isEmpty else {
+            _ = await ask(L10n.text("icloud.batch.nothing"), "", buttons: [L10n.text("dialog.confirm")])
+            return
+        }
+        // Without the disk's figures there is no telling what fits: nothing is downloaded.
+        guard let space = volume else {
+            _ = await ask(L10n.text("icloud.batch.space_unknown"), "", buttons: [L10n.text("dialog.confirm")], style: .warning)
+            return
+        }
+        // What is already on its way, asked for one by one or left by a stopped batch, takes room too.
+        let total = ICloudBatch.totalSize(items), bytes = L10n.current.bytes, arriving = cloudDownloads.pendingBytes
+        let room = ICloudBatch.Volume(available: space.available - arriving, total: space.total)
+        volume = room
+        if let space = volume, !space.fits(total) {
+            let fitting = ICloudBatch.countThatFits(items, in: space)
+            guard fitting > 0 else {
+                _ = await ask(L10n.text("icloud.batch.space_title"),
+                              L10n.format("icloud.batch.no_space_message", bytes(total), bytes(space.available), bytes(space.reserve)),
+                              buttons: [L10n.text("dialog.confirm")], style: .warning)
+                return
+            }
+            let message = L10n.format("icloud.batch.space_message", number(items.count), bytes(total), bytes(space.available),
+                                      bytes(space.reserve), number(fitting))
+            guard await ask(L10n.text("icloud.batch.space_title"), message,
+                            buttons: [L10n.text("icloud.batch.download_fitting"), cancel], style: .warning) == 0 else { return }
+            items = Array(items.prefix(fitting))
+        } else if items.count > ICloudBatch.confirmationThreshold {
+            let message = L10n.format("icloud.batch.confirm_message", bytes(total), bytes(volume?.available ?? 0))
+            guard await ask(L10n.format("icloud.batch.confirm_title", number(items.count)), message,
+                            buttons: [L10n.text("icloud.batch.download"), cancel]) == 0 else { return }
+        }
+        guard !Task.isCancelled, workspace.activeTab != nil, session === activeSession, !cloudBatch.isRunning else { return }
+        cloudBatch.start(items, folder: location)
+    }
+
+    /// Whether the list shows the folder the running (or just ended) batch was started from.
+    private var showsCloudBatchFolder: Bool {
+        guard workspace.activeTab != nil, let folder = cloudBatch.folder else { return false }
+        let location = session.history.current.url
+        return location.isFileURL && location.standardizedFileURL.path == folder.standardizedFileURL.path
+    }
+
+    private func cloudBatchEnded(_ end: ICloudBatchDownloader.End) {
+        cloudBatchRefresh?.cancel(); cloudBatchRefresh = nil
+        guard workspace.activeTab != nil else { return }
+        updateCloudHeader()
+        renderStatusText()
+        if showsCloudBatchFolder { session.refreshKeepingView() }
+        guard let window else { return }
+        let number: (Int) -> String = { $0.formatted(.number.locale(L10n.current.locale)) }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        switch end {
+        case .outOfSpace(let remaining, let volume):
+            alert.messageText = L10n.text("icloud.batch.stopped_space_title")
+            alert.informativeText = L10n.format("icloud.batch.stopped_space_message", number(remaining),
+                                                L10n.current.bytes(volume.available), L10n.current.bytes(volume.reserve))
+        case .spaceUnknown:
+            alert.messageText = L10n.text("icloud.batch.space_unknown")
+        case .finished(let failed) where failed > 0:
+            alert.messageText = L10n.format("icloud.batch.failed_message", number(failed))
+        default: return
+        }
+        alert.addButton(withTitle: L10n.text("dialog.confirm"))
+        alert.beginSheetModal(for: window) { _ in }
+    }
+
+    /// While a batch runs the folder is read again every few seconds, not at every file.
+    private func scheduleCloudBatchRefresh() {
+        guard cloudBatchRefresh == nil else { return }
+        cloudBatchRefresh = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            guard let self else { return }
+            self.cloudBatchRefresh = nil
+            if self.showsCloudBatchFolder, !self.session.blocksInteraction { self.session.refreshKeepingView() }
+        }
+    }
+
+    @objc private func cloudStatusClicked(_ sender: NSButton) {
+        let row = table.row(for: sender)
+        guard visibleEntries.indices.contains(row), !session.blocksInteraction else { return }
+        startICloudDownload(visibleEntries[row])
+    }
+
+    /// The iCloud state of one row: the download in progress when this window asked for it,
+    /// otherwise the state the listing read.
+    private func cloudState(of entry: FileEntry) -> (state: ICloudAvailability?, download: ICloudDownloadMonitor.Status?) {
+        var state = entry.secureFolderURL == nil ? entry.iCloudAvailability : nil
+        let download = state == nil ? nil : cloudDownloads.status(for: entry.url)
+        if download == nil, state != nil, state != .available, cloudDownloaded.contains(entry.url.path) { state = .available }
+        return (state, download)
+    }
+
+    private func configureCloudCell(_ cell: CloudStatusCell, for entry: FileEntry) {
+        let (state, download) = cloudState(of: entry)
+        var description = state.map { L10n.text("icloud." + $0.rawValue) }
+        switch download {
+        case .waiting?: description = L10n.text("icloud.downloading")
+        case .fraction(let value)?:
+            let percent = value.formatted(.percent.precision(.fractionLength(0)).locale(L10n.current.locale))
+            description = L10n.format("icloud.downloading_progress", percent)
+        case nil: break
+        }
+        cell.configure(state: state, description: description,
+                       canDownload: (state == .onlineOnly || state == .failed) && download == nil, download: download)
+    }
+
+    /// Updates the status cell of one item where it stands, without reloading the list.
+    private func updateCloudCell(for url: URL) {
+        let path = url.path
+        if viewMode != .details {
+            if let row = visibleEntries.firstIndex(where: { $0.url.path == path }),
+               let item = grid.item(at: IndexPath(item: row, section: 0)) as? FileGridItem { configureGridItem(item, for: visibleEntries[row]) }
+            return
+        }
+        let column = table.column(withIdentifier: Self.cloudColumn)
+        guard column >= 0, let row = visibleEntries.firstIndex(where: { $0.url.path == path }),
+              let cell = table.view(atColumn: column, row: row, makeIfNecessary: false) as? CloudStatusCell else { return }
+        configureCloudCell(cell, for: visibleEntries[row])
+    }
+
+    private func observeCloudDownloads() {
+        cloudDownloads.onProgress = { [weak self] url in self?.updateCloudCell(for: url) }
+        cloudBatch.onProgress = { [weak self] in self?.updateCloudHeader(); self?.renderStatusText() }
+        cloudBatch.onEnd = { [weak self] end in self?.cloudBatchEnded(end) }
+        cloudDownloads.onFinish = { [weak self] url, downloaded in
+            guard let self else { return }
+            if downloaded { self.cloudDownloaded.insert(url.path) }
+            self.updateCloudCell(for: url)
+            self.updateGalleryStage()
+            // The batch reports its own outcome and reads the folder at its own pace; an item
+            // asked for on its own while a batch runs is treated as usual, below.
+            if self.cloudBatch.itemFinished(url, downloaded: downloaded) {
+                if self.cloudBatch.isRunning { self.scheduleCloudBatchRefresh() }
+                return
+            }
+            // The tab may show another folder by now: only the folder that holds the item is
+            // refreshed, and only there is a failure worth a message.
+            let location = self.session.history.current.url
+            guard location.isFileURL, location.standardizedFileURL.path == url.deletingLastPathComponent().standardizedFileURL.path else { return }
+            if !downloaded {
+                self.errorLabel.stringValue = L10n.format("icloud.download_failed", url.lastPathComponent)
+                self.errorLabel.isHidden = false
+            }
+            self.session.refreshKeepingView()
+        }
+    }
+
+    /// Asks iCloud for the item and refreshes its state in place. Nothing moves, so the list keeps
+    /// its scroll position and selection, and no progress panel is shown: the download itself runs
+    /// in iCloud and shows in the status column.
+    private func startICloudDownload(_ entry: FileEntry) {
+        guard entry.iCloudAvailability != nil, !session.blocksInteraction else { return }
+        let url = entry.url, name = entry.name, activeSession = session
+        // The icon answers the click at once; the progress follows when iCloud reports it.
+        let started = cloudDownloads.begin(url, size: entry.size ?? 0)
+        Task { [weak self] in
+            // One file is held to the same rule as a batch: the disk's reserve is not touched.
+            let space = await Task.detached { ICloudBatch.volume(at: url.deletingLastPathComponent()) }.value
+            if let self, let space, !space.fits(self.cloudDownloads.pendingBytes) {
+                if started { self.cloudDownloads.cancel(url) }
+                guard self.workspace.activeTab != nil, self.session === activeSession else { return }
+                self.errorLabel.stringValue = L10n.format("icloud.batch.no_room", name)
+                self.errorLabel.isHidden = false
+                return
+            }
+            do { try await Task.detached { try ICloudAvailability.request(.download, at: url) }.value }
+            catch {
+                if started { self?.cloudDownloads.cancel(url) }
+                guard let self, self.session === activeSession else { return }
+                self.errorLabel.stringValue = L10n.format("icloud.download_failed", name)
+                self.errorLabel.isHidden = false
+                return
+            }
+            // No reload here: the cell already follows the download, and reading a large folder
+            // now would only delay the reading that follows its end.
+        }
+    }
+
     private func applySavedColumns() {
         let preferences = ExplorerStyle.browserPreferences
         for (index, identifier) in preferences.columnOrder.enumerated() {
             let current = table.column(withIdentifier: NSUserInterfaceItemIdentifier(identifier))
             if current >= 0 { table.moveColumn(current, toColumn: index) }
         }
+        // The iCloud column is not part of the saved layout: it always goes right after the name.
+        let cloud = table.column(withIdentifier: Self.cloudColumn), name = table.column(withIdentifier: NSUserInterfaceItemIdentifier("name"))
+        if cloud >= 0, name >= 0 { table.moveColumn(cloud, toColumn: cloud > name ? name + 1 : name) }
         for column in table.tableColumns {
             if let width = preferences.columnWidths[column.identifier.rawValue] { column.width = width }
         }
@@ -439,7 +842,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     func tableViewColumnDidResize(_ notification: Notification) { positionRenameField(); schedulePresentationSave() }
     func splitViewDidResizeSubviews(_ notification: Notification) { schedulePresentationSave() }
     func windowDidMove(_ notification: Notification) { schedulePresentationSave() }
-    func windowDidResize(_ notification: Notification) { schedulePresentationSave() }
+    func windowDidResize(_ notification: Notification) { schedulePresentationSave(); refitTrail() }
 
     private func addLine(to root: NSStackView) {
         let separator = ExplorerStyle.separator()
@@ -453,6 +856,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         for (key, title, width) in columns {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(key))
             column.title = title; column.width = width; column.minWidth = 75
+            column.headerCell = SortHeaderCell(textCell: title)
             column.headerToolTip = title
             column.headerCell.alignment = .left
             column.headerCell.lineBreakMode = .byTruncatingTail
@@ -465,9 +869,11 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
                              .paragraphStyle: paragraph])
             column.sortDescriptorPrototype = NSSortDescriptor(key: key, ascending: true)
             table.addTableColumn(column)
+            if key == "name" { table.addTableColumn(makeCloudColumn()) }
         }
+        observeCloudDownloads()
         table.style = .plain
-        table.rowHeight = max(29, ExplorerStyle.preferences.fontSize(for: .files) + 14)
+        table.rowHeight = FileTypeIcon.listRowHeight
         table.headerView?.frame.size.height = max(24, ExplorerStyle.preferences.fontSize(for: .files) + 12)
         table.intercellSpacing = NSSize(width: 0, height: 0)
         table.usesAlternatingRowBackgroundColors = false
@@ -562,7 +968,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     private func rememberView() {
         guard let tab = workspace.activeTab else { return }
         tab.filterQuery = filter.stringValue
-        session.remember(selection: selectedPaths(), scrollOffset: fileScroll.contentView.bounds.origin.y)
+        session.remember(selection: selectedPaths(), scrollOffset: listOffset)
     }
 
     private func selectedPaths() -> Set<String> {
@@ -585,11 +991,12 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         forwardButton.isEnabled = !session.history.forward.isEmpty
         upButton.isEnabled = !session.history.current.url.explorerIsRoot
         table.isEnabled = !session.blocksInteraction
+        grid.isSelectable = !session.blocksInteraction
+        gridScroll.alphaValue = session.blocksInteraction ? 0.5 : 1
         let restoredFallback = tab.restorationUnavailableURL != nil || restorationFallbackTabs.contains(tab.id)
         errorLabel.stringValue = L10n.directoryError(session.failure) ?? systemVolumes.notice(for: tab.id) ?? (restoredFallback ? L10n.text("options.restore_unavailable") : "")
         errorLabel.toolTip = errorLabel.stringValue
         errorLabel.isHidden = errorLabel.stringValue.isEmpty
-        hiddenButton.state = session.showHidden ? .on : .off
         tree.setShowHidden(session.showHidden)
         let url = session.history.current.url
         if changedTab || renderedPath != url.explorerIdentity { addressSuggestions.dismiss() }
@@ -597,11 +1004,14 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         if changedTab || renderedPath != url.explorerIdentity || !editingAddress { address.stringValue = CloudAccounts.shared.address(for: url) }
         renderedPath = url.explorerIdentity
         window?.title = L10n.format("window.title", url.isFileURL ? (url.path == "/" ? L10n.text("tree.computer") : url.lastPathComponent) : CloudAccounts.shared.title(for: url))
-        window?.representedURL = url.isFileURL ? url : nil
+        // No represented URL: with one, AppKit fetches the folder's icon for the title bar on the
+        // main thread, and for that the system counts the folder's items. In a huge iCloud folder
+        // that held the window back for seconds at every launch, and at times for good.
         rebuildBreadcrumbs(url)
         if changedTab || !session.isLoading {
+            applyViewMode(viewMode(for: url))
             rebuildRows(selection: session.history.current.selectedPaths, scroll: session.history.current.scrollOffset)
-            tree.selectIfVisible(url)
+            tree.show(url)
         }
         filter.isEnabled = !session.blocksInteraction
         updatePreviewSelection()
@@ -609,8 +1019,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             progress.startAnimation(nil)
             if session.blocksInteraction {
                 status.stringValue = L10n.text("status.loading")
-                openButton.isEnabled = false; copyButton.isEnabled = false
-                extractButton.isHidden = true; searchablePDFButton.isHidden = true
+                updateCommandBar()
                 message.isHidden = true
             }
             return
@@ -629,6 +1038,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         if column >= 0 {
             table.reloadData(forRowIndexes: IndexSet(integersIn: 0..<table.numberOfRows), columnIndexes: IndexSet(integer: column))
         }
+        refreshVisibleGridItems()
         tree.updateGit(snapshot: gitState.snapshot, roots: gitState.repositoryRootPaths)
     }
 
@@ -639,11 +1049,21 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         let localization = L10n.current
         visibleEntries = EntryOrdering.sorted(entries, by: EntrySortKey(rawValue: descriptor?.key ?? "name") ?? .name,
                                               ascending: descriptor?.ascending ?? true, kindName: localization.fileKind)
+        if !cloudDownloaded.isEmpty {
+            // Kept only for items of this folder that the listing has not caught up with.
+            let pending = Set(session.entries.lazy.filter { $0.iCloudAvailability != nil && $0.iCloudAvailability != .available }.map(\.url.path))
+            cloudDownloaded.formIntersection(pending)
+        }
         rendering = true
+        table.tableColumn(withIdentifier: Self.cloudColumn)?.isHidden = !visibleEntries.contains { $0.iCloudAvailability != nil }
         table.reloadData()
         let indexes = IndexSet(visibleEntries.indices.filter { selection.contains(visibleEntries[$0].id) })
         table.selectRowIndexes(indexes, byExtendingSelection: false)
-        if let scroll {
+        if viewMode != .details {
+            grid.reloadData()
+            syncGridSelection()
+            if let scroll { restoreGridOffset(scroll, selection: indexes.first) }
+        } else if let scroll {
             table.layoutSubtreeIfNeeded()
             let top = -fileScroll.contentView.contentInsets.top
             let maximum = max(top, table.bounds.height - fileScroll.contentView.bounds.height)
@@ -660,6 +1080,8 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         updateStatus()
     }
 
+    /// The trail shows every folder of the path. Only when they do not fit in the bar are the
+    /// ones in the middle replaced by "…", as few of them as it takes.
     private func rebuildBreadcrumbs(_ url: URL) {
         for view in breadcrumbs.arrangedSubviews { breadcrumbs.removeArrangedSubview(view); view.removeFromSuperview() }
         var paths: [URL] = [], current = url
@@ -668,34 +1090,402 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             if current.explorerIsRoot { break }
             current = current.explorerParent
         }
-        let shown = paths.count > 5 ? [paths[0]] + Array(paths.suffix(4)) : paths
-        for (index, path) in shown.enumerated() {
-            if index > 0 { breadcrumbs.addArrangedSubview(ExplorerStyle.label(index == 1 && paths.count > 5 ? "› … ›" : "›", color: .tertiaryLabelColor)) }
-            let title = path.isFileURL ? (path.path == "/" ? L10n.text("tree.computer") : path.lastPathComponent) : CloudAccounts.shared.title(for: path)
-            let button = BreadcrumbButton(title: title,
-                                          target: self, action: #selector(breadcrumbClicked))
-            button.destination = path; button.isBordered = false
-            button.font = ExplorerStyle.font(.bars, weight: path == url ? .semibold : .regular)
-            button.lineBreakMode = .byTruncatingMiddle
-            button.toolTip = CloudAccounts.shared.address(for: path)
-            button.setAccessibilityLabel(L10n.format("breadcrumbs.go_to", CloudAccounts.shared.address(for: path)))
-            breadcrumbs.addArrangedSubview(button)
+        func views(_ shown: [URL], elided: Bool) -> [NSView] {
+            var result: [NSView] = []
+            for (index, path) in shown.enumerated() {
+                if index > 0 { result.append(ExplorerStyle.label(index == 1 && elided ? "› … ›" : "›", color: .tertiaryLabelColor)) }
+                let title = path.isFileURL ? (path.path == "/" ? L10n.text("tree.computer") : path.lastPathComponent) : CloudAccounts.shared.title(for: path)
+                let button = BreadcrumbButton(title: title, target: self, action: #selector(breadcrumbClicked))
+                button.destination = path; button.isBordered = false
+                button.quiet = true
+                button.setContentCompressionResistancePriority(path == url ? .defaultHigh : .defaultLow, for: .horizontal)
+                button.font = ExplorerStyle.font(.bars, weight: path == url ? .semibold : .regular)
+                button.lineBreakMode = .byTruncatingMiddle
+                button.toolTip = CloudAccounts.shared.address(for: path)
+                button.setAccessibilityLabel(L10n.format("breadcrumbs.go_to", CloudAccounts.shared.address(for: path)))
+                result.append(button)
+            }
+            return result
         }
+        func width(_ views: [NSView]) -> CGFloat {
+            views.reduce(0) { $0 + $1.intrinsicContentSize.width } + CGFloat(max(0, views.count - 1)) * breadcrumbs.spacing
+        }
+        let room = address.bounds.width - 16
+        var chosen = views(paths, elided: false)
+        if room > 0, width(chosen) > room, paths.count > 2 {
+            // Keep the first folder and as many of the last ones as fit.
+            for tail in stride(from: paths.count - 2, through: 1, by: -1) {
+                chosen = views([paths[0]] + Array(paths.suffix(tail)), elided: true)
+                if width(chosen) <= room { break }
+            }
+        }
+        trailWidth = address.bounds.width
+        for view in chosen { breadcrumbs.addArrangedSubview(view) }
         let spacer = NSView(); spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         breadcrumbs.addArrangedSubview(spacer)
     }
 
+    /// The width of the address bar the trail was last fitted to.
+    private var trailWidth: CGFloat = 0
+    private func refitTrail() {
+        guard workspace.activeTab != nil, abs(address.bounds.width - trailWidth) > 1 else { return }
+        rebuildBreadcrumbs(session.history.current.url)
+    }
+
     private func updateStatus() {
         let count = table.selectedRowIndexes.count
-        status.stringValue = L10n.current.listingStatus(visible: visibleEntries.count, total: session.entries.count,
-                                                     filtered: !filter.stringValue.isEmpty, selected: count)
-        openButton.isEnabled = count == 1 && !session.blocksInteraction
-        copyButton.isEnabled = count > 0 && !session.blocksInteraction
-        let eligible = !session.blocksInteraction && (1...50).contains(count) && Self.canBatchOCR(selectedTableEntries())
-        extractButton.isHidden = !eligible || count != 1
-        searchablePDFButton.isHidden = !eligible
-        searchablePDFButton.title = L10n.text(count == 1 ? "ocr.create_pdf" : "ocr.create_pdfs")
+        renderStatusText()
+        _ = count
+        updateCommandBar()
         updatePreviewSelection()
+    }
+
+    /// Fills the strip with the titles of the application's menus (all but the first, which is
+    /// the application's own). Called again whenever the menus are built anew.
+    func rebuildMenuStrip() {
+        for view in menuStrip.arrangedSubviews { menuStrip.removeArrangedSubview(view); view.removeFromSuperview() }
+        for item in (NSApp.mainMenu?.items ?? []).dropFirst() {
+            guard let menu = item.submenu, !item.isHidden else { continue }
+            let button = MenuStripButton()
+            button.title = item.title
+            button.font = ExplorerStyle.font(.menus)
+            button.stripMenu = menu
+            button.setAccessibilityLabel(item.title)
+            menuStrip.addArrangedSubview(button)
+        }
+    }
+
+    /// The menu of the "More" button of the command bar.
+    var moreMenu: NSMenu { moreButton.dropMenu }
+
+    private var toolbarMenus: [NSMenu] { [newButton.dropMenu, sortButton.dropMenu, viewButton.dropMenu, moreButton.dropMenu] }
+
+    /// Whether a command came from the command bar: it acts on the selection of the list even
+    /// though the list may not have the keyboard at that moment.
+    private func fromToolbar(_ sender: Any?) -> Bool {
+        if let item = sender as? NSMenuItem, let menu = item.menu { return toolbarMenus.contains { $0 === menu } }
+        return (sender as? NSView)?.isDescendant(of: commandBar) == true
+    }
+
+    /// The commands of the bar that need a selection are dimmed without one, not hidden: nothing
+    /// in the bar changes place.
+    private func updateCommandBar() {
+        let blocked = session.blocksInteraction, entries = blocked ? [] : selectedTableEntries()
+        for (button, needs) in selectionButtons {
+            switch needs {
+            case .any: button.isEnabled = !entries.isEmpty
+            case .oneLocal: button.isEnabled = entries.count == 1 && entries[0].url.isFileURL
+            case .shareable: button.isEnabled = !entries.isEmpty && FileSharingController.supports(entries.map(\.url))
+            }
+        }
+        pasteButton.isEnabled = !blocked
+        newButton.isEnabled = !blocked
+        sortButton.isEnabled = !blocked
+    }
+
+    /// The trail of folders shows while the address is not being edited; the text of the field
+    /// is still there underneath, unseen, for everything that reads it.
+    private func showTrail(_ show: Bool) {
+        breadcrumbs.isHidden = !show
+        address.textColor = show ? .clear : .labelColor
+    }
+
+    @objc func renameInList(_ sender: Any?) {
+        guard !session.blocksInteraction else { return }
+        window?.makeFirstResponder(fileListView)
+        renameSelectionInPlace()
+    }
+
+    private func renderStatusText() {
+        var text = L10n.current.listingStatus(visible: visibleEntries.count, total: session.entries.count,
+                                              filtered: !filter.stringValue.isEmpty, selected: table.selectedRowIndexes.count)
+        if cloudBatch.isRunning {
+            let progress = cloudBatch.progress
+            let number: (Int) -> String = { $0.formatted(.number.locale(L10n.current.locale)) }
+            text += " · " + L10n.format("icloud.batch.status", number(progress.done), number(progress.total),
+                                        L10n.current.bytes(progress.doneBytes), L10n.current.bytes(progress.totalBytes))
+        } else if cloudBatchPreparing {
+            text += " · " + L10n.text("icloud.batch.checking")
+        }
+        status.stringValue = text
+    }
+
+    // MARK: View modes
+
+    /// The view that shows the files now: the table of details or the grid of the other modes.
+    var fileListView: NSView { viewMode == .details ? table : grid }
+    private var activeScroll: NSScrollView { viewMode == .details ? fileScroll : gridScroll }
+    private var listScrollsSideways: Bool { viewMode == .list || viewMode == .gallery }
+    /// How far the list is scrolled, along the direction it scrolls in.
+    var listOffset: Double {
+        let origin = activeScroll.contentView.bounds.origin
+        return listScrollsSideways ? origin.x : origin.y
+    }
+    /// The row under the secondary click that opened the context menu, or -1.
+    private var clickedListRow: Int { viewMode == .details ? table.clickedRow : (grid.clickedIndex ?? -1) }
+
+    /// The entries of the "View" menus that choose the mode and the order; with no target they
+    /// go to the window in front.
+    static func viewModeItems(target: AnyObject?) -> [NSMenuItem] {
+        let keys: [FileViewMode: String] = [.details: "view.mode.details", .list: "view.mode.list", .smallIcons: "view.mode.small_icons",
+                                            .largeIcons: "view.mode.large_icons", .gallery: "view.mode.gallery"]
+        let items = FileViewMode.allCases.enumerated().map { index, mode in
+            let item = NSMenuItem(title: L10n.text(keys[mode] ?? ""), action: #selector(changeViewMode(_:)), keyEquivalent: "")
+            item.tag = index
+            item.target = target
+            item.identifier = NSUserInterfaceItemIdentifier("view.mode." + mode.rawValue)
+            return item
+        }
+        return items
+    }
+
+    /// The order of the list: by which column, and in which direction.
+    static func sortItems(target: AnyObject?) -> [NSMenuItem] {
+        var items = BrowserViewPreferences.defaultColumnOrder.map { key in
+            let item = NSMenuItem(title: L10n.text("column." + key), action: #selector(sortByColumn(_:)), keyEquivalent: "")
+            item.representedObject = key
+            item.target = target
+            return item
+        }
+        items.append(.separator())
+        for (tag, key) in [(1, "view.sort.ascending"), (0, "view.sort.descending")] {
+            let item = NSMenuItem(title: L10n.text(key), action: #selector(sortInDirection(_:)), keyEquivalent: "")
+            item.tag = tag
+            item.target = target
+            items.append(item)
+        }
+        return items
+    }
+
+    @objc func changeViewMode(_ sender: NSMenuItem) {
+        guard FileViewMode.allCases.indices.contains(sender.tag) else { return }
+        setViewMode(FileViewMode.allCases[sender.tag])
+    }
+
+    /// The grids have no column headers: the order is chosen in the "View" menu.
+    @objc func sortByColumn(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String, !session.blocksInteraction else { return }
+        table.sortDescriptors = [NSSortDescriptor(key: key, ascending: table.sortDescriptors.first?.ascending ?? true)]
+    }
+
+    @objc func sortInDirection(_ sender: NSMenuItem) {
+        guard !session.blocksInteraction else { return }
+        table.sortDescriptors = [NSSortDescriptor(key: table.sortDescriptors.first?.key ?? "name", ascending: sender.tag == 1)]
+    }
+
+    private func viewMode(for url: URL) -> FileViewMode {
+        let identity = url.explorerIdentity
+        return transientViewModes[identity] ?? ExplorerStyle.folderViewModes.mode(for: identity)
+    }
+
+    /// Chooses how the open folder is shown and remembers it for that folder.
+    func setViewMode(_ mode: FileViewMode) {
+        let url = session.history.current.url, identity = url.explorerIdentity
+        // The name of what is inside a protected folder is not written to the preferences.
+        if url.isFileURL, SecureFolderService.isSessionURL(url) { transientViewModes[identity] = mode }
+        else { ExplorerStyle.folderViewModes.set(mode, for: identity) }
+        applyViewMode(mode)
+        // The selection stays in sight in the new mode, whichever way the change was applied.
+        if let first = table.selectedRowIndexes.first {
+            reveal(first)
+            if mode != .details { grid.revealAfterLayout(first) }
+        }
+    }
+
+    private func applyViewMode(_ mode: FileViewMode) {
+        guard mode != viewMode else { return }
+        let renaming = inlineRename.map { window?.firstResponder === $0.field.currentEditor() } ?? false
+        let focused = acceptsFileListCommands || renaming
+        endInlineRename()
+        if viewMode == .gallery { galleryStage.show(nil, name: "", local: false) }
+        viewMode = mode
+        let gallery = mode == .gallery
+        fileScroll.isHidden = mode != .details
+        gridScroll.isHidden = mode == .details
+        galleryStage.isHidden = !gallery
+        if gallery { gridTop.isActive = false; gridHeight.isActive = true } else { gridHeight.isActive = false; gridTop.isActive = true }
+        if mode != .details {
+            grid.grid.metrics = FileGridMetrics.metrics(for: mode)
+            gridScroll.hasHorizontalScroller = listScrollsSideways
+            gridScroll.hasVerticalScroller = !listScrollsSideways
+            gridScroll.superview?.layoutSubtreeIfNeeded()
+        }
+        rendering = true
+        grid.reloadData()
+        rendering = false
+        syncGridSelection()
+        if focused { window?.makeFirstResponder(fileListView) }
+    }
+
+    /// Runs once the grid has laid its items out again after a change of mode or of contents;
+    /// until then it cannot be scrolled past its previous size. Dropped if the list moved on.
+    private func afterGridLayout(_ work: @escaping @MainActor (ExplorerWindowController) -> Void) {
+        guard viewMode != .details else { return }
+        let mode = viewMode, path = renderedPath, tab = renderedTabID
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.viewMode == mode, self.renderedPath == path, self.renderedTabID == tab else { return }
+            work(self)
+        }
+    }
+
+    private func configureGrid() {
+        grid.dataSource = self; grid.delegate = self
+        grid.menu = table.menu
+        grid.registerForDraggedTypes(FileClipboard.dragTypes)
+        grid.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
+        grid.setDraggingSourceOperationMask(.copy, forLocal: false)
+        grid.serviceSelection = table.serviceSelection
+        grid.openSelection = { [weak self] in self?.openSelected(nil) }
+        grid.goBack = { [weak self] in self?.goBack(nil) }
+        grid.typeSelectName = { [weak self] index in
+            guard let self, self.visibleEntries.indices.contains(index) else { return nil }
+            return self.visibleEntries[index].displayName(showExtensions: ExplorerStyle.preferences.showFileExtensions)
+        }
+        grid.renameCandidate = { [weak self] index, point in self?.renameCandidate(at: point, row: index) }
+        grid.onSelectionChange = { [weak self] in self?.gridSelectionChanged() }
+        grid.setAccessibilityLabel(L10n.text("table.accessibility"))
+        grid.setAccessibilityIdentifier("explorer.files.grid")
+        gridScroll.documentView = grid
+        gridScroll.autohidesScrollers = true
+        gridScroll.drawsBackground = true
+        gridScroll.backgroundColor = .controlBackgroundColor
+        gridScroll.isHidden = true
+        galleryStage.isHidden = true
+        grid.watchViewport(of: gridScroll)
+    }
+
+    /// The user changed the selection in the grid: the table, which every command reads, follows.
+    private func gridSelectionChanged() {
+        guard viewMode != .details, !rendering else { return }
+        let indexes = grid.selectedIndexes.filteredIndexSet { $0 < table.numberOfRows }
+        if indexes != table.selectedRowIndexes { table.selectRowIndexes(indexes, byExtendingSelection: false) }
+    }
+
+    /// The selection changed in the table, by a command or by the grid itself: the grid shows it.
+    private func syncGridSelection() {
+        guard viewMode != .details else { return }
+        grid.setSelection(table.selectedRowIndexes.filteredIndexSet { $0 < visibleEntries.count })
+        updateGalleryStage()
+    }
+
+    private func isOnThisMac(_ entry: FileEntry) -> Bool {
+        entry.iCloudAvailability == nil || entry.iCloudAvailability == .available || cloudDownloaded.contains(entry.url.path)
+    }
+
+    private func updateGalleryStage() {
+        guard viewMode == .gallery else { return }
+        let row = table.selectedRow
+        guard !session.blocksInteraction, visibleEntries.indices.contains(row) else { galleryStage.show(nil, name: "", local: false); return }
+        let entry = visibleEntries[row]
+        galleryStage.show(entry, name: entry.displayName(showExtensions: ExplorerStyle.preferences.showFileExtensions), local: isOnThisMac(entry))
+    }
+
+    private func reveal(_ row: Int) {
+        if viewMode == .details { table.scrollRowToVisible(row) } else { grid.reveal(row) }
+    }
+
+    private func restoreGridOffset(_ offset: Double, selection first: Int?, settled: Bool = false) {
+        grid.settle()
+        let clip = gridScroll.contentView
+        let content = grid.currentGeometry.contentSize
+        let limit = listScrollsSideways ? content.width - clip.bounds.width : content.height - clip.bounds.height
+        let value = min(max(0, limit), max(0, offset))
+        clip.scroll(to: listScrollsSideways ? NSPoint(x: value, y: 0) : NSPoint(x: 0, y: value))
+        gridScroll.reflectScrolledClipView(clip)
+        if offset == 0, let first { grid.reveal(first) }
+        if !settled, offset != 0, abs(listOffset - value) > 1 {
+            afterGridLayout { $0.restoreGridOffset(offset, selection: first, settled: true) }
+        }
+    }
+
+    private func configureGridItem(_ item: FileGridItem, for entry: FileEntry) {
+        let metrics = grid.grid.metrics, cell = item.cell
+        item.represent(entry)
+        cell.arrange(metrics.arrangement)
+        cell.label.isHidden = inlineRename?.entry.id == entry.id
+        cell.label.stringValue = entry.displayName(showExtensions: ExplorerStyle.preferences.showFileExtensions)
+        cell.label.font = ExplorerStyle.font(.files)
+        FileTypeIcon.configure(cell, for: entry, side: metrics.icon)
+        GitDecoration.apply(to: cell, url: entry.url, directory: entry.canNavigate,
+            snapshot: gitState.snapshot, roots: gitState.repositoryRootPaths, baseTooltip: CloudAccounts.shared.address(for: entry.url))
+        let cloud = cloudState(of: entry)
+        item.showCloud(state: cloud.state, downloading: cloud.download != nil, description: cloud.state.map { L10n.text("icloud." + $0.rawValue) })
+        if metrics.thumbnails, isOnThisMac(entry), entry.secureFolderURL == nil, let kind = MediaKind.detect(entry), kind != .audio {
+            item.showThumbnail(of: entry, kind: kind, side: metrics.icon)
+        }
+    }
+
+    /// Draws again what is on screen in the grid, where it stands: Git marks, focus, names.
+    /// Only the marks: the pictures already on screen are left alone, not read again.
+    private func refreshVisibleGridItems() {
+        guard viewMode != .details else { return }
+        for case let item as FileGridItem in grid.visibleItems() {
+            guard let row = grid.indexPath(for: item)?.item, visibleEntries.indices.contains(row) else { continue }
+            let entry = visibleEntries[row]
+            guard item.entryID == entry.id else { configureGridItem(item, for: entry); continue }
+            GitDecoration.apply(to: item.cell, url: entry.url, directory: entry.canNavigate,
+                snapshot: gitState.snapshot, roots: gitState.repositoryRootPaths, baseTooltip: CloudAccounts.shared.address(for: entry.url))
+        }
+    }
+
+    func numberOfSections(in collectionView: NSCollectionView) -> Int { 1 }
+
+    func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int {
+        viewMode == .details ? 0 : visibleEntries.count
+    }
+
+    func collectionView(_ collectionView: NSCollectionView, itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
+        let item = collectionView.makeItem(withIdentifier: FileGridItem.identifier, for: indexPath)
+        if let item = item as? FileGridItem, visibleEntries.indices.contains(indexPath.item) {
+            configureGridItem(item, for: visibleEntries[indexPath.item])
+        }
+        return item
+    }
+
+    func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) { gridSelectionChanged() }
+    func collectionView(_ collectionView: NSCollectionView, didDeselectItemsAt indexPaths: Set<IndexPath>) { gridSelectionChanged() }
+
+    func collectionView(_ collectionView: NSCollectionView, canDragItemsAt indexPaths: Set<IndexPath>, with event: NSEvent) -> Bool {
+        !session.blocksInteraction
+    }
+
+    func collectionView(_ collectionView: NSCollectionView, pasteboardWriterForItemAt indexPath: IndexPath) -> (any NSPasteboardWriting)? {
+        guard !session.blocksInteraction, visibleEntries.indices.contains(indexPath.item) else { return nil }
+        return FileClipboard.pasteboardWriter(for: visibleEntries[indexPath.item].url)
+    }
+
+    /// Where something dropped on the grid goes: into the folder under the pointer, else into
+    /// the open folder. Nil over a protected folder, which takes nothing.
+    private func gridDrop(_ info: any NSDraggingInfo) -> (destination: URL, folderRow: Int?)? {
+        let row = grid.currentGeometry.index(at: grid.convert(info.draggingLocation, from: nil)) ?? -1
+        let onFolder = visibleEntries.indices.contains(row) && visibleEntries[row].canNavigate
+        guard let destination = dropDestination(row: row, operation: .on) else { return nil }
+        return (destination, onFolder ? row : nil)
+    }
+
+    func collectionView(_ collectionView: NSCollectionView, validateDrop draggingInfo: any NSDraggingInfo,
+                        proposedIndexPath proposedDropIndexPath: AutoreleasingUnsafeMutablePointer<NSIndexPath>,
+                        dropOperation proposedDropOperation: UnsafeMutablePointer<NSCollectionView.DropOperation>) -> NSDragOperation {
+        guard !session.blocksInteraction, let drop = gridDrop(draggingInfo) else { return [] }
+        if let row = drop.folderRow {
+            proposedDropIndexPath.pointee = NSIndexPath(forItem: row, inSection: 0)
+            proposedDropOperation.pointee = .on
+        } else {
+            proposedDropIndexPath.pointee = NSIndexPath(forItem: visibleEntries.count, inSection: 0)
+            proposedDropOperation.pointee = .before
+        }
+        return FileDrop.operation(for: FileDrop.readURLs(from: draggingInfo), to: drop.destination,
+                                  allowed: FileDrop.allowedOperations(for: draggingInfo))
+    }
+
+    func collectionView(_ collectionView: NSCollectionView, acceptDrop draggingInfo: any NSDraggingInfo, indexPath: IndexPath,
+                        dropOperation: NSCollectionView.DropOperation) -> Bool {
+        guard !session.blocksInteraction, let drop = gridDrop(draggingInfo) else { return false }
+        let urls = FileDrop.readURLs(from: draggingInfo)
+        let action = FileDrop.operation(for: urls, to: drop.destination, allowed: FileDrop.allowedOperations(for: draggingInfo))
+        guard action == .copy || action == .move else { return false }
+        FileCommands.shared.transfer(urls, to: drop.destination, move: action == .move)
+        return FileCommands.shared.task != nil
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { visibleEntries.count }
@@ -716,6 +1506,14 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             FileTypeIcon.configure(cell, for: entry, rowHeight: tableView.rowHeight)
             GitDecoration.apply(to: cell, url: entry.url, directory: entry.canNavigate,
                 snapshot: gitState.snapshot, roots: gitState.repositoryRootPaths, baseTooltip: CloudAccounts.shared.address(for: entry.url))
+            return cell
+        }
+        if column.identifier == Self.cloudColumn {
+            let cell = (tableView.makeView(withIdentifier: column.identifier, owner: self) as? CloudStatusCell) ?? CloudStatusCell()
+            cell.identifier = column.identifier
+            configureCloudCell(cell, for: entry)
+            cell.button.target = self
+            cell.button.action = #selector(cloudStatusClicked(_:))
             return cell
         }
         let cell = (tableView.makeView(withIdentifier: column.identifier, owner: self) as? NSTextField) ?? ExplorerStyle.label("", area: .files)
@@ -747,6 +1545,8 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !rendering else { return }
+        syncGridSelection()
+        if table.selectedRow >= 0 { deletionAnchor = nil }
         endInlineRename()
         updateStatus()
     }
@@ -764,6 +1564,9 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     @objc func goBack(_ sender: Any?) { navigate(.back) }
     @objc func goForward(_ sender: Any?) { navigate(.forward) }
     @objc func goUp(_ sender: Any?) { navigate(.up) }
+    /// Applies the tree option right away, without waiting for the next navigation.
+    func syncTreeToOpenFolder() { tree.show(session.history.current.url) }
+
     @objc func refresh(_ sender: Any?) { forceGitRefresh = true; tree.refresh(); navigate(.reload) }
     @objc func toggleFileExtensions(_ sender: Any?) {
         ExplorerStyle.preferences.setShowFileExtensions(!ExplorerStyle.preferences.showFileExtensions)
@@ -778,7 +1581,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         previewButton.state = show ? .on : .off
         guard show != previewPaneVisible else { updatePreviewSelection(); return }
         let sidebar = sidebarWidth
-        let scroll = fileScroll.contentView.bounds.origin
+        let scroll = activeScroll.contentView.bounds.origin
         if show {
             previewPane.view.frame.size.width = lastPreviewWidth
             split.addArrangedSubview(previewPane.view)
@@ -789,7 +1592,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         } else {
             lastPreviewWidth = previewPane.view.frame.width
             if let responder = window?.firstResponder as? NSView, responder.isDescendant(of: previewPane.view) {
-                window?.makeFirstResponder(table)
+                window?.makeFirstResponder(fileListView)
             }
             previewPane.closePreview()
             split.removeArrangedSubview(previewPane.view)
@@ -798,8 +1601,8 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             split.setPosition(sidebar, ofDividerAt: 0)
         }
         split.adjustSubviews()
-        fileScroll.contentView.scroll(to: scroll)
-        fileScroll.reflectScrolledClipView(fileScroll.contentView)
+        activeScroll.contentView.scroll(to: scroll)
+        activeScroll.reflectScrolledClipView(activeScroll.contentView)
         updatePreviewSelection()
     }
 
@@ -817,6 +1620,8 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             split.setPosition(split.bounds.width - width - split.dividerThickness, ofDividerAt: 1)
         }
     }
+
+    func pausePreviewPlayback() { previewPane.pausePlayback() }
 
     private func updatePreviewSelection() {
         guard previewPaneVisible else { return }
@@ -854,6 +1659,25 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         if menuItem.action == #selector(togglePreviewPane) {
             menuItem.state = ExplorerStyle.preferences.showPreviewPane ? .on : .off
         }
+        if menuItem.action == #selector(toggleHidden) {
+            menuItem.state = session.showHidden ? .on : .off
+            return !session.blocksInteraction
+        }
+        if menuItem.action == #selector(batchOCR), fromToolbar(menuItem) {
+            menuItem.title = L10n.text(selectedTableEntries().count > 1 ? "ocr.create_pdfs" : "ocr.create_pdf")
+        }
+        switch menuItem.action {
+        case #selector(changeViewMode(_:)):
+            menuItem.state = FileViewMode.allCases.indices.contains(menuItem.tag) && FileViewMode.allCases[menuItem.tag] == viewMode ? .on : .off
+            return true
+        case #selector(sortByColumn(_:)):
+            menuItem.state = menuItem.representedObject as? String == table.sortDescriptors.first?.key ? .on : .off
+            return !session.blocksInteraction
+        case #selector(sortInDirection(_:)):
+            menuItem.state = (menuItem.tag == 1) == (table.sortDescriptors.first?.ascending ?? true) ? .on : .off
+            return !session.blocksInteraction
+        default: break
+        }
         let entries = commandEntries(menuItem)
         let local = entries.allSatisfy { $0.url.isFileURL }
         switch menuItem.action {
@@ -869,15 +1693,16 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         case #selector(shareFiles): return FileSharingController.supports(entries.map(\.url)) && !session.blocksInteraction
         case #selector(extractText): return !session.blocksInteraction && Self.canExtractText(entries)
         case #selector(batchOCR): return !session.blocksInteraction && Self.canBatchOCR(entries)
-        case #selector(renameFile): return local && entries.count == 1 && !session.blocksInteraction && !FileCommands.shared.isBusy
+        case #selector(renameFile), #selector(renameInList): return local && entries.count == 1 && !session.blocksInteraction && !FileCommands.shared.isBusy
         case #selector(pasteFiles):
-            guard menuItem.menu === table.menu || acceptsFileListCommands else { return false }
+            guard menuItem.menu === table.menu || acceptsFileListCommands || fromToolbar(menuItem) else { return false }
             let destination = menuItem.menu === table.menu && entries.count == 1 && entries[0].canNavigate ? entries[0].url : session.history.current.url
             return FileCommands.shared.canPaste(into: destination) && !session.blocksInteraction && !FileCommands.shared.isBusy
-        case #selector(newFolder): return (menuItem.menu === table.menu || acceptsFileListCommands) && !session.blocksInteraction && FileCommands.shared.canCreateFolder(in: session.history.current.url)
+        case #selector(newFolder): return (menuItem.menu === table.menu || acceptsFileListCommands || fromToolbar(menuItem)) && !session.blocksInteraction && FileCommands.shared.canCreateFolder(in: session.history.current.url)
         case #selector(extractFile): return local && entries.count == 1 && !entries[0].isDirectory && entries[0].url.pathExtension.lowercased() == "zip" && !FileCommands.shared.isBusy
         case #selector(properties), #selector(openSelected): return entries.count == 1 && !session.blocksInteraction
         case #selector(openWith): return local && !entries.isEmpty && entries.allSatisfy { !$0.canNavigate }
+        case #selector(editWithSuiteEditor(_:)): return !session.blocksInteraction
         case #selector(openSelectedInNewTab): return entries.count == 1 && entries[0].canNavigate
         case #selector(copyPath): return !entries.isEmpty
         default: return true
@@ -887,9 +1712,10 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     func menuNeedsUpdate(_ menu: NSMenu) {
         guard menu === table.menu else { return }
         endInlineRename()
-        if table.clickedRow >= 0, visibleEntries.indices.contains(table.clickedRow) {
-            if !table.selectedRowIndexes.contains(table.clickedRow) {
-                table.selectRowIndexes(IndexSet(integer: table.clickedRow), byExtendingSelection: false)
+        let clicked = clickedListRow
+        if clicked >= 0, visibleEntries.indices.contains(clicked) {
+            if !table.selectedRowIndexes.contains(clicked) {
+                table.selectRowIndexes(IndexSet(integer: clicked), byExtendingSelection: false)
             }
             contextEntries = table.selectedRowIndexes.compactMap { visibleEntries.indices.contains($0) ? visibleEntries[$0] : nil }
         } else { contextEntries = [] }
@@ -929,10 +1755,16 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             item(contextEntries.count == 1 && !contextEntries[0].url.isFileURL && !contextEntries[0].canNavigate ? "cloud.open_copy" : "command.open", #selector(openSelected), "arrow.up.forward.square")
             item("command.open_new_tab", #selector(openSelectedInNewTab), "plus.square.on.square")
             item("command.open_with", #selector(openWith), "app")
+            addSuiteEditors(to: menu)
             if entries.count == 1, let entry = entries.first, let state = entry.iCloudAvailability, entry.secureFolderURL == nil {
                 if state == .onlineOnly || state == .failed { item("icloud.download", #selector(downloadFromICloud), "icloud.and.arrow.down") }
                 if entry.canRemoveICloudDownload { item("icloud.remove", #selector(removeLocalDownload), "icloud") }
                 item("icloud.finder", #selector(manageICloudInFinder), "folder")
+            }
+            if cloudBatch.isRunning || cloudBatchPreparing {
+                item("icloud.batch.stop_tip", #selector(stopCloudBatch), "stop.circle")
+            } else if entries.count > 1, entries.contains(where: ICloudBatch.concerns) {
+                item("icloud.batch.download_selected", #selector(downloadSelectionFromICloud), "icloud.and.arrow.down")
             }
             if let actions = QuickActionCommands.menu(for: contextEntries, in: window) {
                 menu.addItem(withTitle: actions.title, action: nil, keyEquivalent: "").submenu = actions
@@ -953,9 +1785,38 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             item("command.undo_files", #selector(undoFileOperation), "arrow.uturn.backward")
             menu.addItem(.separator())
             item("command.refresh", #selector(refresh), "arrow.clockwise")
+            if cloudBatch.isRunning || cloudBatchPreparing {
+                item("icloud.batch.stop_tip", #selector(stopCloudBatch), "stop.circle")
+            } else if visibleEntries.contains(where: ICloudBatch.concerns) {
+                item("icloud.batch.header_tip", #selector(downloadAllFromICloud), "icloud.and.arrow.down")
+            }
         }
         addGitMenu(to: menu, entries: entries)
         ExplorerStyle.configureMenu(menu)
+    }
+
+    /// "Edit with My Notepad" and "Edit with My Paint": shown only when that application is
+    /// installed and declares it can open every selected file.
+    private func addSuiteEditors(to menu: NSMenu) {
+        let files = contextEntries.filter { $0.url.isFileURL && !$0.isDirectory }
+        guard !files.isEmpty, files.count == contextEntries.count else { return }
+        for editor in SuiteEditor.allCases {
+            guard let application = NSWorkspace.shared.urlForApplication(withBundleIdentifier: editor.bundleIdentifier) else { continue }
+            let types = SuiteEditor.documentTypes(ofApplicationAt: application)
+            guard files.allSatisfy({ SuiteEditor.supports($0.url, documentTypes: types) }) else { continue }
+            let title = L10n.text(editor == .notepad ? "command.edit_with_notepad" : "command.edit_with_paint")
+            let entry = menu.addItem(withTitle: title, action: #selector(editWithSuiteEditor(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = application
+            entry.identifier = NSUserInterfaceItemIdentifier("suite." + editor.rawValue)
+            entry.image = ExplorerStyle.symbol(editor == .notepad ? "square.and.pencil" : "paintbrush", description: title)
+        }
+    }
+
+    @objc private func editWithSuiteEditor(_ sender: NSMenuItem) {
+        guard let application = sender.representedObject as? URL else { return }
+        let urls = contextEntries.filter { $0.url.isFileURL && !$0.isDirectory }.map(\.url)
+        FileCommands.shared.open(urls, withApplicationAt: application)
     }
 
     private func addGitMenu(to menu: NSMenu, entries: [FileEntry]) {
@@ -1056,12 +1917,12 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     /// another control is focused. An explicitly clicked table context menu is separate.
     var acceptsFileListCommands: Bool {
         guard let responder = window?.firstResponder, !(responder is NSTextView) else { return false }
-        return responder === table || (responder as? NSView)?.isDescendant(of: table) == true
+        return responder === fileListView || (responder as? NSView)?.isDescendant(of: fileListView) == true
     }
 
     private func commandEntries(_ sender: Any?) -> [FileEntry] {
         if let item = sender as? NSMenuItem, item.menu === table.menu { return contextEntries }
-        if let button = sender as? NSButton, button === extractButton || button === searchablePDFButton { return selectedTableEntries() }
+        if fromToolbar(sender) { return selectedTableEntries() }
         guard acceptsFileListCommands else { return [] }
         return selectedTableEntries()
     }
@@ -1087,11 +1948,8 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         onBatchOCR?(entries.map(\.url))
     }
     @objc private func downloadFromICloud(_ sender: Any?) {
-        guard let entry = commandEntries(sender).first, entry.iCloudAvailability != nil else { return }
-        FileCommands.shared.run("icloud.download") {
-            try await Task.detached { try ICloudAvailability.request(.download, at: entry.url) }.value
-            return [entry.url]
-        }
+        guard let entry = commandEntries(sender).first else { return }
+        startICloudDownload(entry)
     }
 
     @objc private func removeLocalDownload(_ sender: Any?) {
@@ -1124,12 +1982,14 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     @objc func shareFiles(_ sender: Any?) {
         let urls = commandEntries(sender).map(\.url)
         guard !session.blocksInteraction, FileSharingController.supports(urls) else { return }
-        let row = table.clickedRow >= 0 ? table.clickedRow : table.selectedRow
-        let anchor = row >= 0 ? table.rect(ofRow: row).intersection(table.visibleRect) : table.visibleRect
+        let row = clickedListRow >= 0 ? clickedListRow : table.selectedRow
+        let view = fileListView
+        let rowRect = viewMode == .details ? (row >= 0 ? table.rect(ofRow: row) : .zero) : (grid.frame(of: row) ?? .zero)
+        let anchor = rowRect.intersection(view.visibleRect)
         sharingTask?.cancel()
         sharingTask = Task {
             do {
-                try await fileSharing.share(urls, relativeTo: anchor.isEmpty ? table.visibleRect : anchor, of: table)
+                try await fileSharing.share(urls, relativeTo: anchor.isEmpty ? view.visibleRect : anchor, of: view)
             } catch is CancellationError {
                 return
             } catch {
@@ -1149,21 +2009,25 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     @objc func undoFileOperation(_ sender: Any?) { FileCommands.shared.undo() }
     @objc private func completedTableClick() { table.completedClick() }
 
-    private func nameCell(at row: Int) -> FileNameCell? {
+    private func nameCell(at row: Int, make: Bool = true) -> FileNameCell? {
+        guard viewMode == .details else { return visibleEntries.indices.contains(row) ? grid.nameCell(at: row) : nil }
         let column = table.column(withIdentifier: NSUserInterfaceItemIdentifier("name"))
         guard column >= 0, row >= 0, row < table.numberOfRows else { return nil }
-        return table.view(atColumn: column, row: row, makeIfNecessary: true) as? FileNameCell
+        return table.view(atColumn: column, row: row, makeIfNecessary: make) as? FileNameCell
     }
 
-    private func renameCandidate(at point: NSPoint) -> (() -> Void)? {
-        let row = table.row(at: point)
+    /// A slow second click on the name of the only selected item renames it where it is. The
+    /// point is in the coordinates of the list that was clicked: the table or the grid.
+    private func renameCandidate(at point: NSPoint, row clicked: Int? = nil) -> (() -> Void)? {
+        let row = clicked ?? table.row(at: point)
         guard row >= 0, table.selectedRowIndexes == IndexSet(integer: row),
               visibleEntries.indices.contains(row), let cell = nameCell(at: row),
               visibleEntries[row].url.isFileURL else { return nil }
         let label = cell.label
         var textRect = label.bounds
         textRect.size.width = min(textRect.width, label.intrinsicContentSize.width)
-        guard textRect.contains(label.convert(point, from: table)) else { return nil }
+        if label.alignment == .center { textRect.origin.x = (label.bounds.width - textRect.width) / 2 }
+        guard textRect.contains(label.convert(point, from: fileListView)) else { return nil }
         let entry = visibleEntries[row]
         let tabID = workspace.activeID
         return { [weak self] in
@@ -1175,6 +2039,19 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         }
     }
 
+    /// F2: the name of the selected item becomes editable where it is, as in Windows. What cannot
+    /// be edited in the list goes to the rename dialog.
+    private func renameSelectionInPlace() {
+        let row = table.selectedRow
+        guard table.numberOfSelectedRows == 1, visibleEntries.indices.contains(row), visibleEntries[row].url.isFileURL,
+              window?.attachedSheet == nil, !session.blocksInteraction, !FileCommands.shared.isBusy else { renameFile(nil); return }
+        reveal(row)
+        fileListView.layoutSubtreeIfNeeded()
+        guard nameCell(at: row) != nil else { renameFile(nil); return }
+        endInlineRename()
+        beginInlineRename(visibleEntries[row])
+    }
+
     private func beginInlineRename(_ entry: FileEntry) {
         let field = NSTextField(string: entry.name)
         field.font = ExplorerStyle.font(.files)
@@ -1182,7 +2059,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         field.setAccessibilityLabel(L10n.text("dialog.name"))
         field.delegate = self
         inlineRename = (entry, field)
-        fileScroll.contentView.addSubview(field)
+        activeScroll.contentView.addSubview(field)
         positionRenameField()
         guard inlineRename != nil, window?.makeFirstResponder(field) == true else { endInlineRename(); return }
         let stem = entry.isDirectory ? entry.name : (entry.name as NSString).deletingPathExtension
@@ -1195,21 +2072,19 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         guard table.numberOfSelectedRows == 1, visibleEntries.indices.contains(row),
               visibleEntries[row].id == edit.entry.id, let cell = nameCell(at: row) else { endInlineRename(); return }
         cell.label.isHidden = true
-        edit.field.frame = cell.label.convert(cell.label.bounds, to: fileScroll.contentView).insetBy(dx: -2, dy: -2)
+        edit.field.alignment = cell.label.alignment
+        edit.field.frame = cell.label.convert(cell.label.bounds, to: activeScroll.contentView).insetBy(dx: -2, dy: -2)
     }
 
     private func endInlineRename() {
         table.cancelRenameClick()
+        grid.cancelRenameClick()
         guard let edit = inlineRename else { return }
         inlineRename = nil
         edit.field.delegate = nil
         edit.field.abortEditing()
         edit.field.removeFromSuperview()
-        let column = table.column(withIdentifier: NSUserInterfaceItemIdentifier("name"))
-        if column >= 0, let row = visibleEntries.firstIndex(where: { $0.id == edit.entry.id }), row < table.numberOfRows,
-           let cell = table.view(atColumn: column, row: row, makeIfNecessary: false) as? FileNameCell {
-            cell.label.isHidden = false
-        }
+        if let row = visibleEntries.firstIndex(where: { $0.id == edit.entry.id }) { nameCell(at: row, make: false)?.label.isHidden = false }
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy command: Selector) -> Bool {
@@ -1231,13 +2106,13 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         guard confirm || command == #selector(NSResponder.cancelOperation(_:)) else { return false }
         let name = textView.string
         endInlineRename()
-        window?.makeFirstResponder(table)
+        window?.makeFirstResponder(fileListView)
         if confirm, name != edit.entry.name { FileCommands.shared.rename(edit.entry, to: name) }
         return true
     }
 
     func controlTextDidEndEditing(_ notification: Notification) {
-        if notification.object as? NSTextField === address { addressSuggestions.dismiss() }
+        if notification.object as? NSTextField === address { addressSuggestions.dismiss(); showTrail(true) }
         if let field = inlineRename?.field, notification.object as? NSTextField === field { endInlineRename() }
     }
 
@@ -1246,8 +2121,57 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     @objc func trashFiles(_ sender: Any?) { FileCommands.shared.trash(commandEntries(sender)) }
     @objc func compressFiles(_ sender: Any?) { FileCommands.shared.compress(commandEntries(sender), in: session.history.current.url) }
     @objc func extractFile(_ sender: Any?) { if let entry = commandEntries(sender).first { FileCommands.shared.extract(entry, in: session.history.current.url) } }
-    @objc private func properties(_ sender: Any?) { if let entry = commandEntries(sender).first { FileCommands.shared.properties(entry) } }
+    @objc func properties(_ sender: Any?) { if let entry = commandEntries(sender).first { FileCommands.shared.properties(entry) } }
     @objc private func openWith(_ sender: Any?) { FileCommands.shared.openWith(commandEntries(sender)) }
+    /// Takes items that were just deleted out of the lists at once, where they stand; the reading
+    /// of the folder that follows confirms it.
+    func itemsRemoved(_ ids: Set<String>) {
+        for tab in workspace.tabs where tab.id != workspace.activeID { tab.session.forget(ids) }
+        guard session.forget(ids) else { return }
+        let rows = IndexSet(visibleEntries.indices.filter { ids.contains(visibleEntries[$0].id) })
+        guard !rows.isEmpty else { return }
+        endInlineRename()
+        rendering = true
+        visibleEntries.removeAll { ids.contains($0.id) }
+        table.removeRows(at: rows, withAnimation: [])
+        if viewMode != .details { grid.reloadData(); syncGridSelection() }
+        rendering = false
+        if table.selectedRow < 0, let first = rows.first {
+            deletionAnchor = (below: visibleEntries.indices.contains(first) ? visibleEntries[first].id : nil,
+                              above: first > 0 && visibleEntries.indices.contains(first - 1) ? visibleEntries[first - 1].id : nil,
+                              folder: session.history.current.url.explorerIdentity)
+        }
+        message.isHidden = !visibleEntries.isEmpty || session.errorMessage != nil
+        updateStatus()
+        updatePreviewSelection()
+    }
+
+    /// Shows an item's new name at once, in its new place in the order, keeping the scroll; the
+    /// reading of the folder that follows confirms it.
+    /// Shows a rename before it is carried out, when nothing in the list says it will fail.
+    /// False leaves the list as it is, for the outcome to be shown when it comes.
+    func showRename(of entry: FileEntry, as name: String) -> Bool {
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains(":"), name != entry.name,
+              !session.blocksInteraction, session.entries.contains(where: { $0.id == entry.id }),
+              !session.entries.contains(where: { $0.id != entry.id && $0.name.compare(name, options: .caseInsensitive) == .orderedSame })
+        else { return false }
+        itemRenamed(entry, to: name)
+        return true
+    }
+
+    func itemRenamed(_ entry: FileEntry, to name: String) {
+        let renamed = entry.renamed(to: name)
+        for tab in workspace.tabs where tab.id != workspace.activeID { tab.session.replace(entry.id, with: renamed) }
+        guard !session.blocksInteraction, session.replace(entry.id, with: renamed) else { return }
+        endInlineRename()
+        var selection = selectedPaths()
+        if selection.remove(entry.id) != nil { selection.insert(renamed.id) }
+        let scroll = listOffset
+        rebuildRows(selection: selection, scroll: scroll == 0 ? nil : scroll)
+        if let row = visibleEntries.firstIndex(where: { $0.id == renamed.id }) { reveal(row) }
+        updatePreviewSelection()
+    }
+
     func operationFinished(urls: [URL], tabID: UUID?, refreshing directories: Set<String> = []) {
         if trashBrowser?.window?.isVisible == true { trashBrowser?.refresh() }
         tree.refresh()
@@ -1267,7 +2191,19 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             }
             return url.explorerParent.explorerIdentity == location.explorerIdentity ? url : nil
         }
-        if !selected.isEmpty { session.remember(selection: Set(selected.map(\.explorerIdentity)), scrollOffset: 0) }
+        // With nothing new to select and show (an item sent to the Trash, say), the folder is
+        // read again without blocking the list or moving it; in a large folder a blocking reload
+        // greys the whole list out for seconds.
+        guard !selected.isEmpty else { session.refreshKeepingView(); return }
+        // Already in the list (a rename shown at once): select it where it is, no blocking reload.
+        let listed = Set(session.entries.map(\.id)), wanted = Set(selected.map(\.explorerIdentity))
+        if wanted.isSubset(of: listed), !session.blocksInteraction {
+            let rows = IndexSet(visibleEntries.indices.filter { wanted.contains(visibleEntries[$0].id) })
+            if let first = rows.first { table.selectRowIndexes(rows, byExtendingSelection: false); reveal(first) }
+            session.refreshKeepingView()
+            return
+        }
+        session.remember(selection: Set(selected.map(\.explorerIdentity)), scrollOffset: 0)
         session.navigate(.reload)
     }
     func copyAddressText(_ editor: NSTextView) {
@@ -1280,6 +2216,9 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     }
 
     @objc func focusAddress(_ sender: Any?) { window?.makeFirstResponder(address); address.selectText(nil) }
+
+    /// Clicking a folder of the trail while the path is being edited is not possible (the trail
+    /// is hidden then), so this only ever puts the trail back.
 
     @objc private func breadcrumbClicked(_ sender: BreadcrumbButton) {
         if let url = sender.destination { navigate(.visit(url)) }
@@ -1297,10 +2236,10 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             return
         }
         navigate(.visit(url))
-        window?.makeFirstResponder(table)
+        window?.makeFirstResponder(fileListView)
     }
 
-    @objc private func toggleHidden(_ sender: Any?) {
+    @objc func toggleHidden(_ sender: Any?) {
         if !session.blocksInteraction { rememberView() }
         workspace.activeTab?.prepareForUserNavigation()
         session.toggleHidden()
@@ -1308,14 +2247,28 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         ExplorerStyle.browserPreferences.showHidden = session.showHidden
     }
 
-    @objc private func openSelected(_ sender: Any?) {
+    /// The installed My Suite editor that takes a double click on this file: My Notepad for plain
+    /// text. Nil keeps the usual way of opening the file, which for images is the built-in viewer.
+    private func suiteEditorApplication(opening entry: FileEntry) -> URL? {
+        guard entry.url.isFileURL, !entry.isDirectory, !ProcessInfo.processInfo.arguments.contains("--smoke-test") else { return nil }
+        for editor in SuiteEditor.allCases {
+            guard let application = NSWorkspace.shared.urlForApplication(withBundleIdentifier: editor.bundleIdentifier) else { continue }
+            if editor.opensByDefault(entry.url, documentTypes: SuiteEditor.documentTypes(ofApplicationAt: application)) { return application }
+        }
+        return nil
+    }
+
+    @objc func openSelected(_ sender: Any?) {
         guard !session.blocksInteraction else { return }
-        let row = sender is NSMenuItem && table.clickedRow >= 0 ? table.clickedRow : table.selectedRow
+        let row = sender is NSMenuItem && clickedListRow >= 0 ? clickedListRow : table.selectedRow
         guard visibleEntries.indices.contains(row) else { return }
         let entry = visibleEntries[row]
         if let vault = entry.secureFolderURL { secureFolders?.unlock(vault) }
         else if entry.canNavigate { navigate(.visit(entry.url)) }
         else if !entry.url.isFileURL { FileCommands.shared.openRemote(entry) }
+        else if let application = suiteEditorApplication(opening: entry) {
+            FileCommands.shared.open([entry.url], withApplicationAt: application)
+        }
         else if MediaKind.detect(entry) != nil, let onOpenMedia {
             onOpenMedia(visibleEntries, entry.url)
         }
@@ -1327,7 +2280,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
 
     @objc func openSelectedInNewTab(_ sender: Any?) {
         guard !session.blocksInteraction else { return }
-        let row = sender is NSMenuItem && table.clickedRow >= 0 ? table.clickedRow : table.selectedRow
+        let row = sender is NSMenuItem && clickedListRow >= 0 ? clickedListRow : table.selectedRow
         guard visibleEntries.indices.contains(row), visibleEntries[row].canNavigate else { return }
         addTab(at: visibleEntries[row].url)
     }
@@ -1381,7 +2334,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     func selectTab(id: UUID) {
         if !session.blocksInteraction { rememberView() }
         workspace.select(id)
-        window?.makeFirstResponder(table)
+        window?.makeFirstResponder(fileListView)
     }
 
     func closeTab(id: UUID) {
@@ -1397,7 +2350,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     func cycleTab(backwards: Bool = false) {
         if !session.blocksInteraction { rememberView() }
         workspace.selectNext(backwards: backwards)
-        window?.makeFirstResponder(table)
+        window?.makeFirstResponder(fileListView)
     }
 
     var activeTabIsVisible: Bool {
@@ -1454,17 +2407,18 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             ])
             tabStrip.addArrangedSubview(surface)
         }
+        tabStrip.addArrangedSubview(newTabButton)
         let spacer = NSView(); spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         tabStrip.addArrangedSubview(spacer)
         window?.contentView?.layoutSubtreeIfNeeded()
         if let selectedSurface { selectedSurface.scrollToVisible(selectedSurface.bounds) }
     }
 
-    @objc private func copyPath(_ sender: Any?) {
+    @objc func copyPath(_ sender: Any?) {
         guard !session.blocksInteraction else { return }
         var indexes = table.selectedRowIndexes
-        if sender is NSMenuItem, table.clickedRow >= 0, !indexes.contains(table.clickedRow) {
-            indexes = IndexSet(integer: table.clickedRow)
+        if sender is NSMenuItem, clickedListRow >= 0, !indexes.contains(clickedListRow) {
+            indexes = IndexSet(integer: clickedListRow)
         }
         let paths = indexes.compactMap { visibleEntries.indices.contains($0) ? CloudAccounts.shared.address(for: visibleEntries[$0].url) : nil }
         guard !paths.isEmpty else { return }
@@ -1484,6 +2438,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             guard let self, event.window === self.window else { return event }
             guard self.workspace.activeTab != nil else { return event }
             self.table.cancelRenameClick()
+            self.grid.cancelRenameClick()
             let flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
             let key = event.charactersIgnoringModifiers?.lowercased()
             if (flags == .control || flags == [.control, .shift]),
@@ -1515,18 +2470,15 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
                 self.focusFilter(nil)
                 return nil
             }
-            if let editor, editor === self.address.currentEditor(), !editor.hasMarkedText(),
-               self.window?.attachedSheet == nil, NSApp.modalWindow == nil,
-               flags == .control || flags == .command {
-                switch key {
-                case "a": editor.selectAll(nil); return nil
-                case "c": self.copyAddressText(editor); return nil
-                case "x":
-                    if editor.selectedRange().length > 0 { editor.cut(nil) }
-                    return nil
-                case "v": editor.paste(nil); return nil
-                default: break
+            // The Windows editing keys with Control are the same in every text field of the
+            // application (ControlEditingKeys). Here only what is particular to the address bar:
+            // copying with nothing selected copies the whole path.
+            if let editor, !editor.hasMarkedText(), self.window?.attachedSheet == nil, NSApp.modalWindow == nil {
+                if editor === self.address.currentEditor(), flags == .control || flags == .command, key == "c",
+                   editor.selectedRange().length == 0 {
+                    self.copyAddressText(editor); return nil
                 }
+                if ControlEditingKeys.handle(event) { return nil }
             }
             // Leave other editing commands, including input-method composition, to AppKit.
             if editor != nil { return event }
@@ -1540,8 +2492,24 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
                 if key == "x" { if self.acceptsFileListCommands { self.cutFiles(nil) }; return nil }
                 if key == "v" { if self.acceptsFileListCommands { self.pasteFiles(nil) }; return nil }
             }
+            // After a deletion nothing is selected; the arrows go on from where the item was,
+            // not from the top of the list: down takes what stood below it, up what stood above.
+            // In the grids the items also follow one another sideways: right goes on like down.
+            let onward = event.keyCode == 125 || (self.viewMode != .details && event.keyCode == 124)
+            let backward = event.keyCode == 126 || (self.viewMode != .details && event.keyCode == 123)
+            if flags.isEmpty, onward || backward, self.acceptsFileListCommands,
+               self.table.selectedRow < 0, let anchor = self.deletionAnchor {
+                self.deletionAnchor = nil
+                let wanted = onward ? (anchor.below ?? anchor.above) : (anchor.above ?? anchor.below)
+                if anchor.folder == self.session.history.current.url.explorerIdentity, let wanted,
+                   let row = self.visibleEntries.firstIndex(where: { $0.id == wanted }) {
+                    self.table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                    self.reveal(row)
+                    return nil
+                }
+            }
             if event.keyCode == 120 && flags.isEmpty {
-                if self.acceptsFileListCommands { self.renameFile(nil) }
+                if self.acceptsFileListCommands { self.renameSelectionInPlace() }
                 return nil
             }
             if event.keyCode == 117 && flags.isEmpty {
@@ -1557,17 +2525,24 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
                 }
             }
             if event.keyCode == 96 && flags.isEmpty { self.refresh(nil); return nil }
-            if flags == .control && key == "a" {
+            // The Control shortcuts for what the menus offer with Command: new folder, refresh
+            // and, with Option+Return, the properties of the selection.
+            if flags == [.control, .shift], key == "n" {
+                if !self.session.blocksInteraction { self.newFolder(nil) }
+                return nil
+            }
+            if flags == .control, key == "r" { self.refresh(nil); return nil }
+            if flags == .option, event.keyCode == 36 || event.keyCode == 76 {
+                if self.acceptsFileListCommands { self.properties(nil) }
+                return nil
+            }
+            // Command+A too: the App Shortcuts of the system can take it away from the menu.
+            if (flags == .control || flags == .command) && key == "a" {
                 if self.acceptsFileListCommands { self.table.selectAll(nil) }
                 return nil
             }
             return event
         }
-    }
-
-    @objc private func languageChanged(_ sender: NSPopUpButton) {
-        guard AppLanguage.allCases.indices.contains(sender.indexOfSelectedItem) else { return }
-        onLanguageChange?(AppLanguage.allCases[sender.indexOfSelectedItem])
     }
 
     @objc private func protectFolder(_ sender: NSMenuItem) {
@@ -1606,7 +2581,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             }
         }
         if !affected.isEmpty {
-            window?.makeFirstResponder(table)
+            window?.makeFirstResponder(fileListView)
             if affected.count == workspace.tabs.count {
                 workspace.addTab(at: sidebarHome ?? FileManager.default.homeDirectoryForCurrentUser)
             }
@@ -1614,6 +2589,8 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         }
         contextEntries.removeAll()
         previewPane.closePreview()
+        galleryStage.show(nil, name: "", local: false)
+        updateGalleryStage()
         tree.resetListing()
     }
 
@@ -1637,7 +2614,24 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor); self.keyMonitor = nil }
     }
 
-    func windowDidResignKey(_ notification: Notification) { addressSuggestions.dismiss(); endInlineRename() }
+    func windowDidResignKey(_ notification: Notification) { addressSuggestions.dismiss(); endInlineRename(); grid.redrawSelection() }
+    func windowDidBecomeKey(_ notification: Notification) { grid.redrawSelection() }
+
+    /// The first time the window shows, AppKit hands the keyboard to the first control of its
+    /// key loop, the address field. Nobody asked for that: the list takes it back, so the
+    /// address shows the trail. The key loop itself stays AppKit's, for Tab to walk the controls.
+    private var gaveListTheKeyboard = false
+    private func addressTookKeyboard() {
+        showTrail(false)
+        guard !gaveListTheKeyboard else { return }
+        gaveListTheKeyboard = true
+        let cause = NSApp.currentEvent?.type
+        guard cause != .leftMouseDown, cause != .keyDown else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.address.currentEditor() != nil, self.window?.attachedSheet == nil else { return }
+            self.window?.makeFirstResponder(self.fileListView)
+        }
+    }
 
     func windowWillClose(_ notification: Notification) {
         searchWindow?.close(); searchWindow = nil
@@ -1671,7 +2665,9 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             }
         }
         renderSession()
-        if table.rowHeight != previous.table.rowHeight {
+        if viewMode != .details {
+            if previous.viewMode == viewMode { restoreGridOffset(previous.listOffset, selection: nil) }
+        } else if previous.viewMode == .details, table.rowHeight != previous.table.rowHeight {
             let offset = previous.fileScroll.contentView.bounds.minY / previous.table.rowHeight * table.rowHeight
             fileScroll.contentView.scroll(to: NSPoint(x: 0, y: max(-fileScroll.contentView.contentInsets.top, offset)))
             fileScroll.reflectScrolledClipView(fileScroll.contentView)
@@ -1681,7 +2677,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             window?.makeFirstResponder(address)
         } else if editor?.delegate as? NSTextField === previous.filter {
             window?.makeFirstResponder(filter)
-        } else { window?.makeFirstResponder(table) }
+        } else { window?.makeFirstResponder(fileListView) }
         if let textSelection, let restoredEditor = window?.firstResponder as? NSTextView {
             restoredEditor.setSelectedRange(textSelection)
         }

@@ -51,6 +51,8 @@ final class MediaViewerWindowController: DialogWindowController {
     private(set) var currentURL: URL?
     private(set) var playbackReady = false
     private(set) var player: AVPlayer?
+    private var soundObservations: [NSKeyValueObservation] = []
+    private var animation: ImageAnimation?
     var imageLoaded: Bool { imageView.image != nil && !imageViewport.isHidden }
     var message: String { placeholder.isHidden ? "" : placeholder.stringValue }
     func usesFiles(where matches: (URL) -> Bool) -> Bool {
@@ -183,6 +185,7 @@ final class MediaViewerWindowController: DialogWindowController {
         preparationDeadlineTask = nil
         loadTask?.cancel()
         loadTask = nil
+        animation?.stop(); animation = nil
         detachPlayback()
         playbackReady = false
         zoomState = nil
@@ -338,7 +341,43 @@ final class MediaViewerWindowController: DialogWindowController {
         placeholder.isHidden = false
     }
 
-    private func displayCurrent() {
+    /// A file that is only in iCloud is downloaded without asking, as Finder does, and shown when it
+    /// arrives. Moving to another file or closing the viewer stops the wait, not the download.
+    private func downloadThenDisplay(url: URL, generation expectedGeneration: UInt64) {
+        showMessage("media.downloading")
+        loadTask = Task { [weak self] in
+            do { try await Task.detached { try ICloudAvailability.request(.download, at: url) }.value }
+            catch {
+                guard !Task.isCancelled, let self, self.generation == expectedGeneration, self.currentURL == url else { return }
+                self.loadTask = nil
+                self.showMessage("media.needs_download")
+                return
+            }
+            // Half a minute without the download even starting (no network, iCloud paused) gives up;
+            // while it is running there is no limit, since a large video can take long.
+            var stalled = 0
+            while true {
+                do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+                let (downloaded, state) = await Task.detached {
+                    (ICloudAvailability.isDownloaded(at: url), ICloudAvailability.current(at: url))
+                }.value
+                guard !Task.isCancelled, let self, self.generation == expectedGeneration, self.currentURL == url else { return }
+                if downloaded == true {
+                    self.loadTask = nil
+                    self.displayCurrent(autoDownload: false)
+                    return
+                }
+                stalled = state == .downloading ? 0 : stalled + 1
+                if downloaded == nil || state == .failed || stalled >= 60 {
+                    self.loadTask = nil
+                    self.showMessage("media.download_failed")
+                    return
+                }
+            }
+        }
+    }
+
+    private func displayCurrent(autoDownload: Bool = true) {
         cleanup()
         guard let entry = playlist?.current, let kind = MediaKind.detect(entry) else { return }
         let url = entry.url
@@ -367,7 +406,8 @@ final class MediaViewerWindowController: DialogWindowController {
             if prepared.needsDownload {
                 self.cancelPreparationDeadline()
                 self.loadTask = nil
-                self.showMessage("media.needs_download")
+                if autoDownload { self.downloadThenDisplay(url: url, generation: expectedGeneration) }
+                else { self.showMessage("media.needs_download") }
                 return
             }
             if let image = prepared.image {
@@ -383,10 +423,24 @@ final class MediaViewerWindowController: DialogWindowController {
                 self.placeholder.isHidden = true
                 self.messageKey = nil
                 self.loadTask = nil
+                self.animateIfAnimated(prepared.resolvedURL, generation: expectedGeneration)
                 return
             }
             self.startPlayback(url: prepared.resolvedURL, generation: expectedGeneration)
             self.loadTask = nil
+        }
+    }
+
+    /// An animated picture (a WhatsApp sticker in WebP, a GIF) plays in place of its first frame;
+    /// zoom and panning go on working, since every frame has the size of the first.
+    private func animateIfAnimated(_ url: URL, generation expectedGeneration: UInt64) {
+        Task { [weak self] in
+            guard await Task.detached(priority: .userInitiated, operation: { ImageAnimation.isAnimated(url) }).value,
+                  let self, self.generation == expectedGeneration, self.currentURL != nil, self.imageLoaded else { return }
+            self.animation = ImageAnimation(url: url) { [weak self] frame in
+                guard let self, self.generation == expectedGeneration, self.imageLoaded else { return }
+                self.imageView.image = NSImage(cgImage: frame, size: NSSize(width: frame.width, height: frame.height))
+            }
         }
     }
 
@@ -441,6 +495,8 @@ final class MediaViewerWindowController: DialogWindowController {
         autoreleasepool {
             statusObservation?.invalidate()
             statusObservation = nil
+            soundObservations.forEach { $0.invalidate() }
+            soundObservations = []
             playerView.player = nil
             player = nil
         }
@@ -457,6 +513,8 @@ final class MediaViewerWindowController: DialogWindowController {
             return
         }
         self.player = player
+        MediaSound.apply(to: player)
+        soundObservations = MediaSound.follow(player)
         playerView.player = player
         playerView.isHidden = false
         statusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
@@ -465,10 +523,15 @@ final class MediaViewerWindowController: DialogWindowController {
                 guard let self, self.generation == expectedGeneration,
                       self.player?.currentItem?.status.rawValue == status else { return }
                 if status == AVPlayerItem.Status.readyToPlay.rawValue {
+                    let first = !self.playbackReady
                     self.playbackReady = true
                     self.cancelPreparationDeadline()
                     self.placeholder.isHidden = true
                     self.messageKey = nil
+                    // Opening a video or a sound is asking to play it, unless the Options say
+                    // otherwise; the graphic tests check the player at rest.
+                    if first, ExplorerStyle.browserPreferences.autoplayMedia,
+                       !ProcessInfo.processInfo.arguments.contains("--smoke-test") { self.player?.play() }
                 } else if status == AVPlayerItem.Status.failed.rawValue {
                     self.playbackReady = false
                     self.cancelPreparationDeadline()
@@ -502,6 +565,14 @@ private final class MediaViewerWindow: NSWindow {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
         let textEditing = firstResponder is NSTextView
+        // Control (or Command) with + and − zooms the picture. Without this the keys reach the
+        // menu and change the font size of the window behind.
+        if !textEditing, modifiers == .control || modifiers == .command || modifiers == [.control, .shift] || modifiers == [.command, .shift],
+           let viewer = windowController as? MediaViewerWindowController,
+           let key = event.charactersIgnoringModifiers {
+            if key == "+" || key == "=" { viewer.zoomIn(); return true }
+            if key == "-" || key == "_" { viewer.zoomOut(); return true }
+        }
         if !textEditing && ((event.keyCode == 53 && modifiers.isEmpty)
                             || (event.keyCode == 13 && modifiers == .control)) {
             performClose(nil)

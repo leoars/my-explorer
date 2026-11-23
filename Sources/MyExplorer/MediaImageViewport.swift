@@ -50,6 +50,17 @@ final class MediaImageViewport: NSScrollView {
         viewportChanged?()
     }
 
+    /// Control (or Command) with the wheel zooms, as in Windows; the wheel alone pans.
+    override func scrollWheel(with event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        guard modifiers == .control || modifiers == .command else { super.scrollWheel(with: event); return }
+        let delta = event.scrollingDeltaY
+        guard delta != 0, imageView.image != nil else { return }
+        imageClicked?()
+        // A wheel notch is a clear step; a trackpad sends many small ones.
+        magnified?(event.hasPreciseScrollingDeltas ? delta * 0.01 : (delta > 0 ? 0.15 : -0.15))
+    }
+
     override func magnify(with event: NSEvent) {
         imageClicked?()
         magnified?(event.magnification)

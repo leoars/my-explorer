@@ -10,6 +10,10 @@ enum L10n {
     static func text(_ key: String) -> String { current.text(key) }
     static func format(_ key: String, _ value: String) -> String { current.text(key, value) }
     static func format(_ key: String, _ first: String, _ second: String) -> String { current.text(key, first, second) }
+    /// For texts with three or more values, written with numbered placeholders (%1$@, %2$@…).
+    static func format(_ key: String, _ first: String, _ second: String, _ third: String, _ rest: String...) -> String {
+        String(format: text(key), arguments: [first, second, third] + rest)
+    }
     static func directoryError(_ failure: DirectoryFailure?) -> String? {
         guard let failure else { return nil }
         let path = URL(string: failure.path).flatMap { RemoteLocation.parse($0) == nil ? nil : CloudAccounts.shared.address(for: $0) } ?? failure.path

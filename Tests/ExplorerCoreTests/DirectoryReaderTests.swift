@@ -60,6 +60,81 @@ final class DirectoryReaderTests: XCTestCase {
         XCTAssertEqual(entry.url.path, child.path)
     }
 
+    func testForgetDropsRemovedItemsAndTheirSelectionAtOnce() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for name in ["a.txt", "b.txt"] { try Data().write(to: root.appendingPathComponent(name)) }
+        let session = DirectorySession(url: root)
+        await session.navigate(.reload).value
+        let gone = try XCTUnwrap(session.entries.first { $0.name == "a.txt" })
+        session.remember(selection: [gone.id], scrollOffset: 120)
+        XCTAssertTrue(session.forget([gone.id]))
+        XCTAssertEqual(session.entries.map(\.name), ["b.txt"])
+        XCTAssertTrue(session.history.current.selectedPaths.isEmpty)
+        XCTAssertEqual(session.history.current.scrollOffset, 120)
+        XCTAssertFalse(session.forget([gone.id]))
+    }
+
+    @MainActor func testAReadingBegunBeforeARemovalDoesNotBringTheItemBack() async throws {
+        let reader = GatedReader()
+        let a = entry("a.txt"), b = entry("b.txt")
+        let session = DirectorySession(url: URL(fileURLWithPath: "/fixture"), reader: reader)
+        let first = session.navigate(.reload)
+        await reader.release([a, b])
+        await first.value
+        session.refreshKeepingView()
+        session.forget([a.id])
+        await reader.release([a, b])
+        while session.isLoading { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(session.entries.map(\.name), ["b.txt"])
+        // A reading begun after the removal is believed: the item may have been restored.
+        session.refreshKeepingView()
+        await reader.release([a, b])
+        while session.isLoading { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(session.entries.map(\.name), ["a.txt", "b.txt"])
+    }
+
+    @MainActor func testAReadingBegunBeforeARenameDoesNotBringTheOldNameBack() async throws {
+        let reader = GatedReader()
+        let a = entry("a.txt"), b = entry("b.txt")
+        let session = DirectorySession(url: URL(fileURLWithPath: "/fixture"), reader: reader)
+        let first = session.navigate(.reload)
+        await reader.release([a, b])
+        await first.value
+        session.refreshKeepingView()
+        let renamed = a.renamed(to: "z.txt")
+        XCTAssertTrue(session.replace(a.id, with: renamed))
+        await reader.release([a, b])
+        while session.isLoading { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(Set(session.entries.map(\.name)), ["b.txt", "z.txt"])
+        // Put back, as when the rename fails: the old name is the one that stays.
+        session.refreshKeepingView()
+        XCTAssertTrue(session.replace(renamed.id, with: a))
+        await reader.release([a, b])
+        while session.isLoading { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(Set(session.entries.map(\.name)), ["a.txt", "b.txt"])
+    }
+
+    func testReplaceShowsARenameAtOnceAndKeepsItSelected() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for name in ["a.txt", "b.txt"] { try Data().write(to: root.appendingPathComponent(name)) }
+        let session = DirectorySession(url: root)
+        await session.navigate(.reload).value
+        let old = try XCTUnwrap(session.entries.first { $0.name == "a.txt" })
+        session.remember(selection: [old.id], scrollOffset: 40)
+        let renamed = old.renamed(to: "c.md")
+        XCTAssertEqual(renamed.kind, "MD")
+        XCTAssertEqual(renamed.url.deletingLastPathComponent().path, old.url.deletingLastPathComponent().path)
+        XCTAssertTrue(session.replace(old.id, with: renamed))
+        XCTAssertEqual(Set(session.entries.map(\.name)), ["b.txt", "c.md"])
+        XCTAssertEqual(session.history.current.selectedPaths, [renamed.id])
+        XCTAssertEqual(session.history.current.scrollOffset, 40)
+        XCTAssertFalse(session.replace(old.id, with: renamed))
+    }
+
     private func entry(_ name: String, directory: Bool = false, size: Int64 = 0) -> FileEntry {
         FileEntry(url: URL(fileURLWithPath: "/fixture/\(name)"), name: name, isDirectory: directory, size: size)
     }
@@ -147,5 +222,17 @@ final class DirectoryReaderTests: XCTestCase {
             XCTAssertNotNil(session.failure)
             XCTAssertEqual(session.history.current.url.path, root.path)
         }
+    }
+}
+
+private final class GatedReader: DirectoryReading, @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiting: [CheckedContinuation<[FileEntry], Never>] = []
+    func entries(at url: URL, showHidden: Bool) async throws -> [FileEntry] {
+        await withCheckedContinuation { continuation in lock.withLock { waiting.append(continuation) } }
+    }
+    func release(_ entries: [FileEntry]) async {
+        while lock.withLock({ waiting.isEmpty }) { try? await Task.sleep(for: .milliseconds(5)) }
+        lock.withLock { waiting.removeFirst() }.resume(returning: entries)
     }
 }

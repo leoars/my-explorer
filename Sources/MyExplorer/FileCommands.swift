@@ -28,6 +28,7 @@ final class FileCommands: NSObject, NSWindowDelegate {
     private var localControl: LocalTransferControl?
     private var pauseButton: NSButton?
     private var panel: NSPanel?
+    private var panelReveal: Task<Void, Never>?
     private var operationKey = "operation.busy"
     private var label: NSTextField?
     private var cancelButton: NSButton?
@@ -202,7 +203,7 @@ final class FileCommands: NSObject, NSWindowDelegate {
             window.endSheet(sheet, returnCode: .cancel)
             sheet.orderOut(nil)
         }
-        panel?.close(); panel = nil
+        hidePanel(); panel = nil
     }
     func openRemote(_ entry: FileEntry) {
         guard !shuttingDown, let location = RemoteLocation.parse(entry.url), !entry.isDirectory,
@@ -232,7 +233,23 @@ final class FileCommands: NSObject, NSWindowDelegate {
         }
     }
     func rename(_ entry: FileEntry, to name: String) {
-        run("command.rename") { [try await AppAutomation.files.rename(entry.url, to: name)] }
+        guard !shuttingDown, !isBusy else { return }
+        // The new name shows at once, before the file system answers; a rename that fails puts
+        // the old one back.
+        let shown = owner?.showRename(of: entry, as: name) == true
+        run("command.rename") {
+            do {
+                let url = try await AppAutomation.files.rename(entry.url, to: name)
+                await MainActor.run {
+                    if !shown { self.owner?.itemRenamed(entry, to: url.lastPathComponent) }
+                    else if url.lastPathComponent != name { self.owner?.itemRenamed(entry.renamed(to: name), to: url.lastPathComponent) }
+                }
+                return [url]
+            } catch {
+                if shown { await MainActor.run { self.owner?.itemRenamed(entry.renamed(to: name), to: entry.name) } }
+                throw error
+            }
+        }
     }
     func canCreateFolder(in directory: URL) -> Bool {
         guard !shuttingDown, !isBusy else { return false }
@@ -253,6 +270,8 @@ final class FileCommands: NSObject, NSWindowDelegate {
             let plan = try await AppAutomation.deletion.plan(sources: entries.map(\.url), recursive: true)
             guard await self.confirmDeletion(count: plan.itemCount) else { await AppAutomation.deletion.discard(planID: plan.id); throw CancellationError() }
             _ = try await AppAutomation.files.executeDeletion(planID: plan.id, using: AppAutomation.deletion, recordUndo: true, authorizationCheck: { _ in !Task.isCancelled })
+            let gone = Set(entries.map(\.id))
+            await MainActor.run { self.owner?.itemsRemoved(gone) }
             return []
         }
     }
@@ -335,6 +354,13 @@ final class FileCommands: NSObject, NSWindowDelegate {
             if response == .alertThirdButtonReturn { SearchTagEditor.present(urls: [entry.url], owner: window) }
         }
     }
+    /// Opens local files in a specific application, reporting a failure like the other commands.
+    func open(_ urls: [URL], withApplicationAt application: URL) {
+        guard !shuttingDown, !urls.isEmpty, urls.allSatisfy(\.isFileURL) else { return }
+        NSWorkspace.shared.open(urls, withApplicationAt: application, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+            if error != nil { Task { @MainActor in self.presentError(key: "error.operation") } }
+        }
+    }
     func openWith(_ entries: [FileEntry]) {
         guard !shuttingDown, let window = owner?.window, !entries.isEmpty, entries.allSatisfy({ $0.url.isFileURL }) else { return }
         let picker = NSOpenPanel()
@@ -368,7 +394,7 @@ final class FileCommands: NSObject, NSWindowDelegate {
             } catch {
                 let restored = refreshingResultParents ? (error as? LocalTransferFailure)?.completed : nil
                 refresh(restored ?? (error as? S3MoveBatchFailure)?.completed ?? [])
-                self.panel?.close()
+                self.hidePanel()
                 if self.shuttingDown { self.recordInterruption(error, operation: title) }
                 else if let failure = error as? LocalTransferFailure {
                     if !failure.recoveryLocations.isEmpty {
@@ -420,7 +446,7 @@ final class FileCommands: NSObject, NSWindowDelegate {
                     if failure.reason != .cancelled { self.presentError(key: "cloud.error.\(failure.reason.rawValue)") }
                 } else if !(error is CancellationError) { self.presentError(key: "error.operation") }
             }
-            self.panel?.close(); self.panel = nil
+            self.hidePanel(); self.panel = nil
             if self.shuttingDown { self.undoKind = nil }
             else { self.undoKind = await AppAutomation.files.localUndoKind() }
             self.localControl = nil; self.pauseButton = nil
@@ -432,6 +458,15 @@ final class FileCommands: NSObject, NSWindowDelegate {
         DialogPlacement.sheetAnchor(sheet, in: window)
     }
 
+    private func revealPanel() {
+        panelReveal?.cancel(); panelReveal = nil
+        guard !shuttingDown, let panel, !panel.isVisible else { return }
+        panel.makeKeyAndOrderFront(nil)
+    }
+    private func hidePanel() {
+        panelReveal?.cancel(); panelReveal = nil
+        panel?.close()
+    }
     private func showProgress(_ title: String) {
         operationKey = title
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 540, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
@@ -455,8 +490,15 @@ final class FileCommands: NSObject, NSWindowDelegate {
         panel.isReleasedWhenClosed = false
         panel.delegate = self
         DialogPlacement.center(panel)
-        panel.makeKeyAndOrderFront(nil)
         self.panel = panel; self.label = label; self.cancelButton = cancel
+        // Most operations end at once: a panel shown and closed within the same instant is only
+        // a flash over the window. It appears when the operation lasts, or has something to ask.
+        panelReveal?.cancel()
+        panelReveal = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled, let self else { return }
+            self.revealPanel()
+        }
         self.progressLabel = detail; self.progressBar = spinner; lastProgressUpdate = .distantPast
     }
     private func updateBytes(_ progress: CloudTransferProgress, name: String) {
@@ -488,6 +530,7 @@ final class FileCommands: NSObject, NSWindowDelegate {
                 alert.addButton(withTitle: L10n.text("command.delete"))
                 conflictAlert = alert
                 cancelDecision = { decision.resolve(false) }
+                revealPanel()
                 alert.beginSheetModal(for: panel) { response in
                     if self.conflictAlert === alert { self.conflictAlert = nil; self.cancelDecision = nil }
                     decision.resolve(!self.shuttingDown && response == .alertSecondButtonReturn)
@@ -511,6 +554,7 @@ final class FileCommands: NSObject, NSWindowDelegate {
                 for key in keys { alert.addButton(withTitle: L10n.text("cloud.conflict.\(key)")) }
                 conflictAlert = alert
                 cancelDecision = { decision.resolve(.cancel) }
+                revealPanel()
                 alert.beginSheetModal(for: panel) { response in
                     if self.conflictAlert === alert { self.conflictAlert = nil; self.cancelDecision = nil }
                     let choices: [StorageConflictChoice] = restoring ? [.cancel, .keepBoth] : [.replace, .keepBoth, .skip, .cancel]

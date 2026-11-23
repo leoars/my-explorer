@@ -28,6 +28,19 @@ public struct FileEntry: Identifiable, Equatable, Sendable {
         self.isPackage = isPackage; self.isSymbolicLink = isSymbolicLink; self.isAlias = isAlias
         self.size = size; self.modified = modified; self.kind = kind
     }
+
+    /// This entry under a new name in the same folder, as it stands right after a rename and
+    /// before the folder is read again.
+    public func renamed(to newName: String) -> FileEntry {
+        let plainFile = !isDirectory && !isPackage && !isSymbolicLink
+        let ext = (newName as NSString).pathExtension
+        return FileEntry(url: url.deletingLastPathComponent().appendingPathComponent(newName, isDirectory: isDirectory),
+                         name: newName, isDirectory: isDirectory, isPackage: isPackage, isSymbolicLink: isSymbolicLink,
+                         isAlias: isAlias, size: size, modified: modified,
+                         kind: plainFile ? (ext.isEmpty ? "File" : ext.uppercased()) : kind,
+                         secureFolderURL: secureFolderURL == url ? nil : secureFolderURL,
+                         iCloudAvailability: iCloudAvailability, canRemoveICloudDownload: canRemoveICloudDownload)
+    }
 }
 
 public protocol DirectoryReading: Sendable {
@@ -83,19 +96,26 @@ public struct DirectoryReader: DirectoryReading {
         guard Self.enclosingVault(directoryURL) == nil, Self.enclosingVault(url) == nil,
               !LocalTransferRecovery.isProtected(directoryURL) else { throw CocoaError(.fileReadNoPermission) }
         try request.checkCancellation()
+        // Whether the folder is in iCloud is asked once, of the folder: asking each item costs a
+        // fifth of a millisecond, eleven seconds for fifty thousand of them.
+        let inICloud = (try? directoryURL.resourceValues(forKeys: [.isUbiquitousItemKey]))?.isUbiquitousItem == true
         let keys: Set<URLResourceKey> = [.isDirectoryKey, .isPackageKey, .isSymbolicLinkKey, .isAliasFileKey,
-            .fileSizeKey, .contentModificationDateKey, .isUbiquitousItemKey]
+            .fileSizeKey, .contentModificationDateKey]
         let urls = try FileManager.default.contentsOfDirectory(
             at: directoryURL, includingPropertiesForKeys: Array(keys),
             options: showHidden ? [] : [.skipsHiddenFiles])
         var entries: [FileEntry] = []
         entries.reserveCapacity(urls.count)
+        let detailedICloud = inICloud && urls.count <= ICloudAvailability.detailedListingLimit
         for file in urls {
             try request.checkCancellation()
-            guard !LocalTransferRecovery.isProtected(file) else { continue }
             // A disappearing or inaccessible child must not discard the whole directory.
             let values = try? file.resourceValues(forKeys: keys)
             let symbolic = values?.isSymbolicLink == true
+            // This location and its ancestors were checked above; a link leads elsewhere and is
+            // checked in full, anything else only for a mark of its own.
+            if symbolic || values == nil { guard !LocalTransferRecovery.isProtected(file) else { continue } }
+            else if values?.isDirectory == true { guard !LocalTransferRecovery.isMarkedDirectory(file) else { continue } }
             let resolvedFile = symbolic ? file.resolvingSymlinksInPath() : file
             let target = symbolic ? try? resolvedFile.resourceValues(
                 forKeys: [.isDirectoryKey, .isPackageKey]) : values
@@ -112,10 +132,17 @@ public struct DirectoryReader: DirectoryReading {
             let displayedURL = url.appendingPathComponent(file.lastPathComponent, isDirectory: directory)
             var iCloud: ICloudAvailability?
             var removable = false
-            if values?.isUbiquitousItem == true && !symbolic {
-                let metadata = try? file.resourceValues(forKeys: ICloudAvailability.keys.union([.isDirectoryKey]))
-                iCloud = metadata.map(ICloudAvailability.init) ?? .unknown
-                removable = metadata.map(ICloudAvailability.canRemoveDownload) ?? false
+            if inICloud && !symbolic {
+                if detailedICloud {
+                    let metadata = try? file.resourceValues(forKeys: ICloudAvailability.keys.union([.isDirectoryKey]))
+                    iCloud = metadata.map(ICloudAvailability.init) ?? .unknown
+                    removable = metadata.map(ICloudAvailability.canRemoveDownload) ?? false
+                } else {
+                    // Removing a download is checked again, in full, when it is asked for.
+                    let state = ICloudAvailability.coarse(at: file)
+                    iCloud = state
+                    removable = state == .available && !directory
+                }
             }
             entries.append(FileEntry(url: displayedURL, name: file.lastPathComponent,
                 isDirectory: directory, isPackage: package, isSymbolicLink: symbolic, isAlias: values?.isAliasFile == true,

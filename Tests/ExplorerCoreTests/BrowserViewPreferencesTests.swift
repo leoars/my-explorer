@@ -150,4 +150,24 @@ private actor BrowserPreferencesRecordingReader: DirectoryReading {
         if calls.count >= count { return calls }
         return await withCheckedContinuation { waiters.append((count, $0)) }
     }
+
+    @Test @MainActor func treeFollowsTheOpenFolderUnlessTurnedOff() throws {
+        let suite = "MyExplorer.BrowserViewTests.\(UUID())", defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let view = BrowserViewPreferences(defaults: defaults)
+        #expect(view.expandTreeToOpenFolder)
+        view.expandTreeToOpenFolder = false
+        #expect(!BrowserViewPreferences(defaults: defaults).expandTreeToOpenFolder)
+        view.expandTreeToOpenFolder = true
+        #expect(BrowserViewPreferences(defaults: defaults).expandTreeToOpenFolder)
+    }
+
+    @Test @MainActor func mediaPlaysByItselfUnlessTurnedOff() throws {
+        let suite = "MyExplorer.BrowserViewTests.\(UUID())", defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let view = BrowserViewPreferences(defaults: defaults)
+        #expect(view.autoplayMedia)
+        view.autoplayMedia = false
+        #expect(!BrowserViewPreferences(defaults: defaults).autoplayMedia)
+    }
 }

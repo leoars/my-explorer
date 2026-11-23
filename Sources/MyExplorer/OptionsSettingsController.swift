@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import AppKit
 import ExplorerCore
+import ExplorerLocalization
 
 @MainActor
 final class OptionsSettingsController: DialogWindowController {
@@ -10,10 +11,17 @@ final class OptionsSettingsController: DialogWindowController {
     let confirmDeletion: NSButton
     let restoreFolder: NSButton
     let restoreTabs: NSButton
+    let expandTree: NSButton
+    let autoplayMedia: NSButton
+    var onExpandTreeChange: (() -> Void)?
     var onChange: (() -> Void)?
     var onMasterPassword: (() -> Void)?
     var onConnectAssistant: (() -> Void)?
     var onShowFonts: (() -> Void)?
+    /// The language of the interface is chosen here; the window is no place for a control that
+    /// is used once.
+    var onLanguageChange: ((AppLanguage) -> Void)?
+    private let language = NSPopUpButton()
     private let preferences: StartupPreferences
     private let sessionPreferences: SessionPreferences
 
@@ -24,7 +32,9 @@ final class OptionsSettingsController: DialogWindowController {
         confirmDeletion = NSButton(checkboxWithTitle: L10n.text("options.confirm_deletion"), target: nil, action: nil)
         restoreTabs = NSButton(checkboxWithTitle: L10n.text("options.restore_tabs"), target: nil, action: nil)
         restoreFolder = NSButton(checkboxWithTitle: L10n.text("options.restore_folder"), target: nil, action: nil)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 520),
+        expandTree = NSButton(checkboxWithTitle: L10n.text("options.expand_tree"), target: nil, action: nil)
+        autoplayMedia = NSButton(checkboxWithTitle: L10n.text("options.autoplay_media"), target: nil, action: nil)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 684),
             styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = L10n.text("options.title")
         window.isReleasedWhenClosed = false
@@ -33,6 +43,18 @@ final class OptionsSettingsController: DialogWindowController {
         confirmDeletion.action = #selector(deletionChanged)
         confirmDeletion.state = ExplorerStyle.browserPreferences.confirmDeletion ? .on : .off
         confirmDeletion.setAccessibilityIdentifier("options.confirmDeletion")
+        expandTree.target = self
+        expandTree.action = #selector(expandTreeChanged)
+        expandTree.state = ExplorerStyle.browserPreferences.expandTreeToOpenFolder ? .on : .off
+        expandTree.setAccessibilityIdentifier("options.expandTree")
+        let expandTreeHelp = NSTextField(wrappingLabelWithString: L10n.text("options.expand_tree_help"))
+        expandTreeHelp.textColor = .secondaryLabelColor
+        autoplayMedia.target = self
+        autoplayMedia.action = #selector(autoplayMediaChanged)
+        autoplayMedia.state = ExplorerStyle.browserPreferences.autoplayMedia ? .on : .off
+        autoplayMedia.setAccessibilityIdentifier("options.autoplayMedia")
+        let autoplayHelp = NSTextField(wrappingLabelWithString: L10n.text("options.autoplay_media_help"))
+        autoplayHelp.textColor = .secondaryLabelColor
         restoreTabs.target = self; restoreTabs.action = #selector(tabsChanged)
         restoreTabs.state = sessionPreferences.restoreTabs ? .on : .off
         restoreTabs.setAccessibilityIdentifier("options.restoreTabs")
@@ -65,8 +87,15 @@ final class OptionsSettingsController: DialogWindowController {
             checkNow.isEnabled = updater.canCheckNow
             self.updateStatus.stringValue = L10n.text(updater.status)
         }
-        let stack = NSStackView(views: [restoreTabs, tabsHelp, restoreFolder, help, confirmDeletion, updateControls, updateStatus, fonts, master])
-        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 20
+        language.addItems(withTitles: AppLanguage.allCases.map { $0 == .system ? L10n.text("language.system") : $0.nativeName })
+        language.selectItem(at: AppLanguage.allCases.firstIndex(of: L10n.preferences.selection) ?? 0)
+        language.target = self; language.action = #selector(languageChanged)
+        language.setAccessibilityLabel(L10n.text("language.accessibility"))
+        language.setAccessibilityIdentifier("options.language")
+        let languageRow = NSStackView(views: [NSTextField(labelWithString: L10n.text("language.label")), language])
+        languageRow.spacing = 10
+        let stack = NSStackView(views: [languageRow, restoreTabs, tabsHelp, restoreFolder, help, expandTree, expandTreeHelp, autoplayMedia, autoplayHelp, confirmDeletion, updateControls, updateStatus, fonts, master])
+        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 16
         stack.translatesAutoresizingMaskIntoConstraints = false
         let general = NSTabViewItem(identifier: "general")
         general.label = L10n.text("options.general")
@@ -102,13 +131,22 @@ final class OptionsSettingsController: DialogWindowController {
             stack.topAnchor.constraint(equalTo: generalView.topAnchor, constant: 16),
             updateStatus.widthAnchor.constraint(equalTo: stack.widthAnchor),
             help.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            tabsHelp.widthAnchor.constraint(equalTo: stack.widthAnchor)
+            tabsHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            expandTreeHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            autoplayHelp.widthAnchor.constraint(equalTo: stack.widthAnchor)
         ])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     @objc private func checkForUpdates() { if let window { updater?.checkNow(from: window) } }
     @objc private func toggleUpdates(_ sender: NSButton) {
         updater?.setEnabled(sender.state == .on)
+    }
+    @objc private func expandTreeChanged(_ sender: NSButton) {
+        ExplorerStyle.browserPreferences.expandTreeToOpenFolder = sender.state == .on
+        onExpandTreeChange?()
+    }
+    @objc private func autoplayMediaChanged(_ sender: NSButton) {
+        ExplorerStyle.browserPreferences.autoplayMedia = sender.state == .on
     }
     @objc private func deletionChanged(_ sender: NSButton) {
         ExplorerStyle.browserPreferences.confirmDeletion = sender.state == .on
@@ -122,4 +160,8 @@ final class OptionsSettingsController: DialogWindowController {
     @objc private func configureMaster(_ sender: Any?) { onMasterPassword?() }
     @objc private func connectAssistant() { onConnectAssistant?() }
     @objc private func showFonts(_ sender: Any?) { onShowFonts?() }
+    @objc private func languageChanged(_ sender: NSPopUpButton) {
+        guard AppLanguage.allCases.indices.contains(sender.indexOfSelectedItem) else { return }
+        onLanguageChange?(AppLanguage.allCases[sender.indexOfSelectedItem])
+    }
 }

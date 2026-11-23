@@ -103,6 +103,12 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
     private var selecting = false
     /// Hover time over one folder before a drag expands it; AppKit's own spring-loading is far too eager.
     static let dragExpandDelay: TimeInterval = 1.0
+    /// Tall enough for the tree's font and for icons the same size as the file list's.
+    private static var rowHeight: CGFloat {
+        max(30, ExplorerStyle.preferences.fontSize(for: .tree) + 12, FileTypeIcon.listIconSide + 7)
+    }
+    /// The folder the tree is opening its way to, while branches are still being read.
+    private var revealTarget: URL?
     private var dragHoverNode: FolderNode?
     private var dragHoverTimer: Timer?
     private var dragExpansionAllowed = false
@@ -137,7 +143,7 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         outline.addTableColumn(column)
         outline.outlineTableColumn = column
         outline.headerView = nil
-        outline.rowHeight = max(30, ExplorerStyle.preferences.fontSize(for: .tree) + 12)
+        outline.rowHeight = Self.rowHeight
         outline.indentationPerLevel = 16
         outline.style = .plain
         outline.backgroundColor = .windowBackgroundColor
@@ -266,8 +272,58 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         cloudRoot.title = L10n.text("cloud.title")
         trashRoot.title = L10n.text("trash.title")
         outline.setAccessibilityLabel(L10n.text("tree.accessibility"))
-        outline.rowHeight = max(30, ExplorerStyle.preferences.fontSize(for: .tree) + 12)
+        outline.rowHeight = Self.rowHeight
         outline.reloadData(forRowIndexes: IndexSet(integersIn: 0..<outline.numberOfRows), columnIndexes: IndexSet(integer: 0))
+    }
+
+    /// Follows the folder open in the list: selects it and, when the option is on, first opens the
+    /// branches that lead to it.
+    func show(_ url: URL) {
+        // The graphical tests drive the tree by hand and expect it to stay as they left it.
+        if ExplorerStyle.browserPreferences.expandTreeToOpenFolder, url.isFileURL,
+           !ProcessInfo.processInfo.arguments.contains("--smoke-test") {
+            revealTarget = url
+            continueReveal()
+        } else {
+            revealTarget = nil
+            selectIfVisible(url)
+        }
+    }
+
+    private static func contains(_ ancestor: URL, _ url: URL) -> Bool {
+        let base = ancestor.standardizedFileURL.path, path = url.standardizedFileURL.path
+        return path == base || path.hasPrefix(base == "/" ? "/" : base + "/")
+    }
+
+    /// One step of the way to `revealTarget`: expands the deepest loaded ancestor and waits for its
+    /// folders when they are still being read; `load` calls back here when they arrive.
+    private func continueReveal() {
+        guard let target = revealTarget else { return }
+        // Start from the most specific location of the tree that holds the folder (Documents before
+        // the home folder, the home folder before the computer).
+        let candidates = roots.filter { !$0.isGroup && $0.savedSearch == nil && $0.url.isFileURL && Self.contains($0.url, target) }
+        guard var node = candidates.max(by: { $0.url.standardizedFileURL.path.count < $1.url.standardizedFileURL.path.count }) else {
+            revealTarget = nil
+            selectIfVisible(target)
+            return
+        }
+        while node.url.standardizedFileURL.path != target.standardizedFileURL.path {
+            if !outline.isItemExpanded(node) {
+                guard outline.isExpandable(node) else { break }
+                expandFromCode { outline.expandItem(node) }
+                // Not expanded yet means its folders are still being read: resume from `load`.
+                if !outline.isItemExpanded(node) { if node.loading { return } else { break } }
+            }
+            guard let next = node.children?.first(where: { Self.contains($0.url, target) }) else { break }
+            node = next
+        }
+        revealTarget = nil
+        let row = outline.row(forItem: node)
+        guard row >= 0 else { selectIfVisible(target); return }
+        selecting = true
+        outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        selecting = false
+        outline.scrollRowToVisible(row)
     }
 
     func selectIfVisible(_ url: URL) {
@@ -468,6 +524,7 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
                     node.needsRefresh = false
                     self.load(node, expand: false)
                 }
+                self.continueReveal()
             } catch {
                 guard let self, let node, request == self.generation, nodeRequest == node.request else { return }
                 node.loading = false
@@ -485,29 +542,39 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         cell.identifier = NSUserInterfaceItemIdentifier("folder")
         cell.label.stringValue = node.title
         cell.label.font = ExplorerStyle.font(.tree)
-        let symbol: String
-        let color: NSColor
+        let icon: ExplorerIcon
         switch node.symbol {
-        case "magnifyingglass", "folder.badge.gearshape": symbol = node.symbol; color = .systemBlue
-        case "house": symbol = "house.fill"; color = .systemOrange
-        case "desktopcomputer": symbol = node.symbol; color = .systemCyan
-        case "arrow.down.circle": symbol = "arrow.down.circle.fill"; color = .systemTeal
-        case "doc": symbol = "doc.text.fill"; color = .systemBlue
-        case "photo.fill": symbol = node.symbol; color = .systemBlue
-        case "music.note": symbol = node.symbol; color = .systemPink
-        case "film.fill": symbol = node.symbol; color = .systemPurple
-        case "iphone": symbol = "iphone"; color = .systemBlue
-        case "internaldrive": symbol = "desktopcomputer"; color = .systemCyan
-        case "externaldrive": symbol = "externaldrive.fill"; color = .systemGray
-        case "trash": symbol = "trash"; color = .secondaryLabelColor
-        case "cloud.s3": symbol = "externaldrive.badge.icloud"; color = .systemOrange
-        case "cloud.azure": symbol = "externaldrive.badge.icloud"; color = .systemBlue
-        case "cloud.gcs": symbol = "externaldrive.badge.icloud"; color = .systemGreen
-        case "cloud.fill": symbol = node.symbol; color = .systemCyan
-        default: symbol = "folder.fill"; color = .systemYellow
+        case "magnifyingglass", "folder.badge.gearshape": icon = .search
+        case "house": icon = .home
+        case "desktopcomputer": icon = .desktop
+        case "arrow.down.circle": icon = .downloads
+        case "doc": icon = .document
+        case "photo.fill": icon = .image
+        case "music.note": icon = .audio
+        case "film.fill": icon = .video
+        case "iphone": icon = .iphone
+        case "internaldrive": icon = .computer
+        case "externaldrive": icon = .disk
+        case "trash": icon = .trash
+        case "cloud.s3": icon = .cloudOrange
+        case "cloud.azure": icon = .cloudBlue
+        case "cloud.gcs": icon = .cloudGreen
+        case "cloud.fill": icon = .cloud
+        default: icon = .folder
         }
-        cell.icon.image = ExplorerStyle.symbol(node.failure == nil ? symbol : "exclamationmark.triangle.fill", description: node.title)
-        cell.icon.contentTintColor = node.failure == nil ? color : .systemOrange
+        // Same icon size as the file list, so the two panes read as one.
+        let side = FileTypeIcon.listIconSide
+        cell.setIconSize(side)
+        cell.icon.imageScaling = .scaleProportionallyUpOrDown
+        cell.icon.imageAlignment = .alignCenter
+        if node.failure == nil {
+            cell.icon.image = PremiumIcons.image(icon, side: side, description: node.title)
+            cell.icon.contentTintColor = nil
+        } else {
+            let warning = ExplorerStyle.symbol("exclamationmark.triangle.fill", description: node.title)
+            cell.icon.image = warning?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: side, weight: .regular)) ?? warning
+            cell.icon.contentTintColor = .systemOrange
+        }
         cell.shortcutBadge.isHidden = true
         GitDecoration.apply(to: cell, url: node.url, directory: true, snapshot: gitSnapshot, roots: gitRoots,
             baseTooltip: L10n.directoryError(node.failure) ?? CloudAccounts.shared.address(for: node.url))

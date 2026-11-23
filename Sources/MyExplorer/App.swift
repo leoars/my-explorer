@@ -45,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let arguments = ProcessInfo.processInfo.arguments
+        ControlEditingKeys.install()
         // macOS frames free-form icons in a grey plate; drawing the Dock tile ourselves keeps the
         // artwork edge to edge with a transparent background.
         if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"), let icon = NSImage(contentsOf: url) {
@@ -67,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             sessionPreferences = SessionPreferences(defaults: UserDefaults(suiteName: name)!)
             FileCommands.shared.interruptionStore = OperationInterruptionStore(defaults: UserDefaults(suiteName: name)!)
             ExplorerStyle.browserPreferences = BrowserViewPreferences(defaults: UserDefaults(suiteName: name)!)
+            ExplorerStyle.folderViewModes = FolderViewModes(defaults: UserDefaults(suiteName: name)!)
             // A smoke run must never read or modify real connections or Keychain credentials.
             CloudAccounts.shared = CloudAccounts(defaults: UserDefaults(suiteName: name)!, useKeychain: false)
             L10n.preferences.select(.portuguese)
@@ -253,6 +255,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             if self.mediaViewer == nil { self.mediaViewer = MediaViewerWindowController() }
             self.mediaViewer?.onExtractText = { [weak self] url in self?.showOCR(url) }
             self.mediaViewer?.window?.appearance = controller?.window?.appearance
+            // The viewer plays by itself: the same video must not go on playing in the pane.
+            controller?.pausePreviewPlayback()
             self.mediaViewer?.open(entries: entries, selectedURL: url)
         }
         controller.onLanguageChange = { [weak self] in self?.changeLanguage($0) }
@@ -304,70 +308,136 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     private func installMenu() {
         let main = NSMenu()
+        func menu(_ key: String) -> NSMenu {
+            let item = NSMenuItem(title: L10n.text(key), action: nil, keyEquivalent: "")
+            let submenu = NSMenu(title: item.title)
+            item.submenu = submenu
+            main.addItem(item)
+            return submenu
+        }
+        /// An entry handled by this object; `mask` nil keeps Command alone.
+        @discardableResult
+        func add(_ menu: NSMenu, _ title: String, _ action: Selector, _ key: String = "", mask: NSEvent.ModifierFlags? = nil,
+                 target: AnyObject? = nil, own: Bool = true) -> NSMenuItem {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: key)
+            item.target = own ? self : target
+            if let mask { item.keyEquivalentModifierMask = mask }
+            return item
+        }
+        /// The names of the navigation buttons carry their shortcut in parentheses; a menu shows it by itself.
+        func plain(_ key: String) -> String {
+            let title = L10n.text(key)
+            return title.components(separatedBy: " (").first?.components(separatedBy: "（").first?.trimmingCharacters(in: .whitespaces) ?? title
+        }
+
+        // The application's own menu: About, Options, updates, Services, hiding and quitting.
         let app = NSMenuItem(); main.addItem(app)
         let appMenu = NSMenu(); app.submenu = appMenu
-        appMenu.addItem(withTitle: L10n.text("app.about"), action: #selector(showAbout), keyEquivalent: "").target = self
-        appMenu.addItem(withTitle: L10n.text("options.title"), action: #selector(showOptions), keyEquivalent: ",").target = self
+        add(appMenu, L10n.text("app.about"), #selector(showAbout))
+        appMenu.addItem(.separator())
+        add(appMenu, L10n.text("options.title"), #selector(showOptions), ",")
+        add(appMenu, L10n.text("updates.check_menu"), #selector(checkForUpdates))
         appMenu.addItem(.separator())
         let services = NSMenu(title: L10n.text("quick.services"))
         appMenu.addItem(withTitle: services.title, action: nil, keyEquivalent: "").submenu = services
         NSApp.registerServicesMenuSendTypes(ExplorerTableView.serviceTypes, returnTypes: [])
         NSApp.servicesMenu = services
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: L10n.text("app.hide"), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        appMenu.addItem(withTitle: L10n.text("app.quit"), action: #selector(requestQuit), keyEquivalent: "q").target = self
-        let file = NSMenuItem(title: L10n.text("menu.file"), action: nil, keyEquivalent: ""); main.addItem(file)
-        let fileMenu = NSMenu(title: L10n.text("menu.file")); file.submenu = fileMenu
-        fileMenu.addItem(withTitle: L10n.text("command.new_tab"), action: #selector(newTab), keyEquivalent: "t").target = self
-        fileMenu.addItem(withTitle: L10n.text("command.close_tab"), action: #selector(closeTab), keyEquivalent: "w").target = self
-        fileMenu.addItem(withTitle: L10n.text("ocr.title"), action: #selector(extractText), keyEquivalent: "").target = self
-        fileMenu.addItem(withTitle: L10n.text("ocr.batch.title"), action: #selector(batchOCR), keyEquivalent: "").target = self
+        add(appMenu, L10n.text("app.hide"), #selector(NSApplication.hide(_:)), "h", own: false)
+        add(appMenu, L10n.text("app.hide_others"), #selector(NSApplication.hideOtherApplications(_:)), "h", mask: [.command, .option], own: false)
+        add(appMenu, L10n.text("app.show_all"), #selector(NSApplication.unhideAllApplications(_:)), own: false)
+        appMenu.addItem(.separator())
+        add(appMenu, L10n.text("app.quit"), #selector(requestQuit), "q")
+
+        // File: tabs, then what is done to the selected items. Those go to the window in front,
+        // which decides whether each applies to its selection.
+        let fileMenu = menu("menu.file")
+        add(fileMenu, L10n.text("command.new_tab"), #selector(newTab), "t")
+        add(fileMenu, L10n.text("command.new_folder"), #selector(ExplorerWindowController.newFolder(_:)), "n", mask: [.command, .shift], own: false)
+        add(fileMenu, L10n.text("command.close_tab"), #selector(closeTab), "w")
+        fileMenu.addItem(.separator())
+        add(fileMenu, L10n.text("command.open"), #selector(ExplorerWindowController.openSelected(_:)), own: false)
+        add(fileMenu, L10n.text("command.rename"), #selector(ExplorerWindowController.renameInList(_:)), own: false)
+        add(fileMenu, L10n.text("command.share"), #selector(ExplorerWindowController.shareFiles(_:)), own: false)
+        add(fileMenu, L10n.text("command.compress"), #selector(ExplorerWindowController.compressFiles(_:)), own: false)
+        add(fileMenu, L10n.text("command.trash"), #selector(ExplorerWindowController.trashFiles(_:)), own: false)
+        add(fileMenu, L10n.text("command.properties"), #selector(ExplorerWindowController.properties(_:)), own: false)
+        fileMenu.addItem(.separator())
+        add(fileMenu, L10n.text("ocr.title"), #selector(extractText))
+        add(fileMenu, L10n.text("ocr.batch.title"), #selector(batchOCR))
         secureFolders.addCommands(to: fileMenu)
-        let edit = NSMenuItem(title: L10n.text("menu.edit"), action: nil, keyEquivalent: ""); main.addItem(edit)
-        let editMenu = NSMenu(title: L10n.text("menu.edit")); edit.submenu = editMenu
-        editMenu.addItem(withTitle: L10n.text("command.undo_files"), action: #selector(undoFiles), keyEquivalent: "z").target = self
+
+        let editMenu = menu("menu.edit")
+        add(editMenu, L10n.text("command.undo_files"), #selector(undoFiles), "z")
         editMenu.addItem(.separator())
-        editMenu.addItem(withTitle: L10n.text("command.cut_files"), action: #selector(cut), keyEquivalent: "x").target = self
-        editMenu.addItem(withTitle: L10n.text("command.copy_files"), action: #selector(copy(_:)), keyEquivalent: "c").target = self
-        editMenu.addItem(withTitle: L10n.text("command.paste_files"), action: #selector(paste), keyEquivalent: "v").target = self
-        let moveHere = editMenu.addItem(withTitle: L10n.text("command.move_here"), action: #selector(moveFilesHere), keyEquivalent: "v")
-        moveHere.target = self; moveHere.keyEquivalentModifierMask = [.command, .option]
-        editMenu.addItem(withTitle: L10n.text("command.select_all"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
-        let view = NSMenuItem(title: L10n.text("menu.view"), action: nil, keyEquivalent: "")
-        let viewMenu = NSMenu(title: view.title)
-        viewMenu.addItem(withTitle: L10n.text("view.extensions"), action: #selector(toggleFileExtensions), keyEquivalent: "").target = self
-        viewMenu.addItem(withTitle: L10n.text("preview.title"), action: #selector(togglePreview), keyEquivalent: "").target = self
-        viewMenu.addItem(withTitle: L10n.text("font.title"), action: #selector(showFontSettings), keyEquivalent: "").target = self
-        viewMenu.addItem(withTitle: L10n.text("options.title"), action: #selector(showOptions), keyEquivalent: "").target = self
-        let increase = viewMenu.addItem(withTitle: L10n.text("font.increase"), action: #selector(increaseFonts), keyEquivalent: "+")
-        increase.target = self; increase.keyEquivalentModifierMask = .control
-        let decrease = viewMenu.addItem(withTitle: L10n.text("font.decrease"), action: #selector(decreaseFonts), keyEquivalent: "-")
-        decrease.target = self; decrease.keyEquivalentModifierMask = .control
-        viewMenu.addItem(withTitle: L10n.text("cloud.manage"), action: #selector(showCloudSettings), keyEquivalent: "").target = self
-        view.submenu = viewMenu; main.addItem(view)
-        let navigation = NSMenuItem(title: L10n.text("menu.navigate"), action: nil, keyEquivalent: ""); main.addItem(navigation)
-        let navMenu = NSMenu(title: L10n.text("menu.navigate")); navigation.submenu = navMenu
-        let address = navMenu.addItem(withTitle: L10n.text("command.edit_address"), action: #selector(focusAddress), keyEquivalent: "l")
-        address.target = self
-        let search = navMenu.addItem(withTitle: L10n.text("search.title"), action: #selector(showFileSearch), keyEquivalent: "f")
-        search.keyEquivalentModifierMask = [.command, .shift]
-        search.target = self
-        navMenu.addItem(withTitle: L10n.text("server.connect"), action: #selector(connectToServer), keyEquivalent: "k").target = self
-        let reload = navMenu.addItem(withTitle: L10n.text("command.refresh"), action: #selector(refresh), keyEquivalent: "r")
-        reload.target = self
-        let languageItem = NSMenuItem(title: L10n.text("menu.language"), action: nil, keyEquivalent: "")
-        let languageMenu = NSMenu(title: L10n.text("menu.language"))
-        for language in AppLanguage.allCases {
-            let item = languageMenu.addItem(withTitle: language == .system ? L10n.text("language.system") : language.nativeName,
-                                           action: #selector(selectLanguage), keyEquivalent: "")
-            item.target = self
-            item.representedObject = language.rawValue
-            item.state = language == L10n.preferences.selection ? .on : .off
-        }
-        languageItem.submenu = languageMenu
-        main.addItem(languageItem)
+        add(editMenu, L10n.text("command.cut_files"), #selector(cut), "x")
+        add(editMenu, L10n.text("command.copy_files"), #selector(copy(_:)), "c")
+        add(editMenu, L10n.text("command.paste_files"), #selector(paste), "v")
+        add(editMenu, L10n.text("command.move_here"), #selector(moveFilesHere), "v", mask: [.command, .option])
+        editMenu.addItem(.separator())
+        add(editMenu, L10n.text("command.select_all"), #selector(NSText.selectAll(_:)), "a", own: false)
+        add(editMenu, L10n.text("command.copy_path"), #selector(ExplorerWindowController.copyPath(_:)), own: false)
+
+        // View: only what changes what the window shows. Settings live in Options.
+        let viewMenu = menu("menu.view")
+        for item in ExplorerWindowController.viewModeItems(target: nil) { viewMenu.addItem(item) }
+        viewMenu.addItem(.separator())
+        let sortItem = viewMenu.addItem(withTitle: L10n.text("view.sort_by"), action: nil, keyEquivalent: "")
+        sortItem.submenu = NSMenu(title: sortItem.title)
+        for item in ExplorerWindowController.sortItems(target: nil) { sortItem.submenu?.addItem(item) }
+        viewMenu.addItem(.separator())
+        add(viewMenu, L10n.text("view.hidden"), #selector(ExplorerWindowController.toggleHidden(_:)), own: false)
+        add(viewMenu, L10n.text("view.extensions"), #selector(toggleFileExtensions))
+        add(viewMenu, L10n.text("preview.title"), #selector(togglePreview))
+        viewMenu.addItem(.separator())
+        add(viewMenu, L10n.text("font.increase"), #selector(increaseFonts), "+", mask: .control)
+        add(viewMenu, L10n.text("font.decrease"), #selector(decreaseFonts), "-", mask: .control)
+
+        let navMenu = menu("menu.navigate")
+        add(navMenu, plain("navigation.back"), #selector(ExplorerWindowController.goBack(_:)), "[", own: false)
+        add(navMenu, plain("navigation.forward"), #selector(ExplorerWindowController.goForward(_:)), "]", own: false)
+        add(navMenu, plain("navigation.up"), #selector(ExplorerWindowController.goUp(_:)), String(UnicodeScalar(NSUpArrowFunctionKey)!), own: false)
+        add(navMenu, L10n.text("command.refresh"), #selector(refresh), "r")
+        navMenu.addItem(.separator())
+        add(navMenu, L10n.text("command.edit_address"), #selector(focusAddress), "l")
+        add(navMenu, L10n.text("search.title"), #selector(showFileSearch), "f", mask: [.command, .shift])
+        navMenu.addItem(.separator())
+        add(navMenu, L10n.text("server.connect"), #selector(connectToServer), "k")
+        add(navMenu, L10n.text("cloud.manage"), #selector(showCloudSettings))
+
+        let windowMenu = menu("menu.window")
+        add(windowMenu, L10n.text("window.minimize"), #selector(NSWindow.performMiniaturize(_:)), "m", own: false)
+        add(windowMenu, L10n.text("window.zoom"), #selector(NSWindow.performZoom(_:)), own: false)
+        windowMenu.addItem(.separator())
+        add(windowMenu, L10n.text("window.front"), #selector(NSApplication.arrangeInFront(_:)), own: false)
+        NSApp.windowsMenu = windowMenu
+
+        let helpMenu = menu("menu.help")
+        add(helpMenu, L10n.text("help.readme"), #selector(openHelp))
+        add(helpMenu, L10n.text("about.issues"), #selector(reportIssue))
+        helpMenu.addItem(.separator())
+        add(helpMenu, L10n.text("app.about"), #selector(showAbout))
+        NSApp.helpMenu = helpMenu
+
         NSApp.mainMenu = main
         ExplorerStyle.configureMenu(main)
+        controller?.rebuildMenuStrip()
+    }
+
+    @objc private func checkForUpdates(_ sender: Any?) {
+        guard let window = controller?.window else { return }
+        updater?.checkNow(from: window)
+    }
+
+    /// The README of the public repository, in the language of the interface.
+    @objc private func openHelp(_ sender: Any?) {
+        let language = L10n.current.language
+        let file = language == .english || language == .system ? "README.md" : "README.\(language.rawValue).md"
+        if let url = URL(string: "https://github.com/leoars/my-explorer/blob/main/" + file) { NSWorkspace.shared.open(url) }
+    }
+
+    @objc private func reportIssue(_ sender: Any?) {
+        if let url = URL(string: "https://github.com/leoars/my-explorer/issues") { NSWorkspace.shared.open(url) }
     }
 
     @objc private func toggleFileExtensions(_ sender: Any?) { controller?.toggleFileExtensions(sender) }
@@ -399,9 +469,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if let editor = NSApp.keyWindow?.firstResponder as? NSTextView { editor.undoManager?.undo() }
         else if NSApp.keyWindow === controller?.window { FileCommands.shared.undo() }
     }
+    private var aboutWindow: AboutWindowController?
     @objc private func showAbout(_ sender: Any?) {
-        NSApp.orderFrontStandardAboutPanel(sender)
-        if let panel = NSApp.keyWindow, panel !== controller?.window { DialogPlacement.center(panel) }
+        // Built anew each time: the language may have changed since it was last shown.
+        aboutWindow?.close()
+        aboutWindow = AboutWindowController()
+        aboutWindow?.showWindow(nil)
+        aboutWindow?.window?.makeKeyAndOrderFront(nil)
     }
 
     @objc private func showFontSettings(_ sender: Any?) {
@@ -413,9 +487,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if optionsSettings == nil {
             let settings = OptionsSettingsController(preferences: startupPreferences, sessionPreferences: sessionPreferences, updater: updater)
             settings.onChange = { [weak self] in self?.saveSession() }
+            settings.onExpandTreeChange = { [weak self] in self?.controller?.syncTreeToOpenFolder() }
             settings.onMasterPassword = { [weak self] in self?.secureFolders.configureMaster(nil) }
             settings.onConnectAssistant = { [weak self] in self?.showAutomationSettings(nil) }
             settings.onShowFonts = { [weak self] in self?.showFontSettings(nil) }
+            settings.onLanguageChange = { [weak self] in self?.changeLanguage($0) }
             optionsSettings = settings
         }
         optionsSettings?.showWindow(nil)
@@ -570,6 +646,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         [view] + view.subviews.flatMap { descendants(of: $0) }
     }
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(checkForUpdates) { return controller?.window != nil && updater?.canCheckNow == true }
         if menuItem.action == #selector(batchOCR) {
             guard NSApp.keyWindow === controller?.window, let controller else { return false }
             return controller.validateMenuItem(NSMenuItem(title: "", action: #selector(ExplorerWindowController.batchOCR), keyEquivalent: ""))
@@ -579,7 +656,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             return controller.validateMenuItem(NSMenuItem(title: "", action: #selector(ExplorerWindowController.extractText), keyEquivalent: ""))
         }
         if menuItem.action == #selector(closeTab) {
-            menuItem.title = L10n.text(NSApp.keyWindow === mediaViewer?.window || NSApp.keyWindow === ocrViewer?.window || NSApp.keyWindow === ocrBatchViewer?.window ? "media.close" : "command.close_tab")
+            // With no key window (the application in the background) there is no viewer in front:
+            // comparing nil with a viewer that does not exist would call the item "Close viewer".
+            let key = NSApp.keyWindow
+            let viewer = key != nil && (key === mediaViewer?.window || key === ocrViewer?.window || key === ocrBatchViewer?.window)
+            menuItem.title = L10n.text(viewer ? "media.close" : "command.close_tab")
             return controller != nil || mediaViewer?.window?.isVisible == true
         }
         if menuItem.action == #selector(undoFiles) {
@@ -1165,8 +1246,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private static let smokeColumnWidths: [String: CGFloat] = ["name": 415, "modified": 188, "kind": 142, "size": 118]
 
     private func assertSmokeColumns(_ browser: ExplorerWindowController) throws {
-        guard browser.table.tableColumns.map({ $0.identifier.rawValue }) == Self.smokeColumnOrder,
-              browser.table.tableColumns.allSatisfy({ abs($0.width - Self.smokeColumnWidths[$0.identifier.rawValue]!) < 1 }) else {
+        // The iCloud column is not part of the saved layout: it always sits next to the name.
+        let saved = browser.table.tableColumns.filter { $0.identifier != ExplorerWindowController.cloudColumn }
+        guard saved.map({ $0.identifier.rawValue }) == Self.smokeColumnOrder,
+              saved.allSatisfy({ abs($0.width - Self.smokeColumnWidths[$0.identifier.rawValue]!) < 1 }) else {
             throw SmokeFailure.failed("Column order or widths were not restored by stable IDs")
         }
     }
@@ -1181,12 +1264,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         for (index, id) in Self.smokeColumnOrder.enumerated() {
             browser.table.moveColumn(browser.table.column(withIdentifier: NSUserInterfaceItemIdentifier(id)), toColumn: index)
         }
-        for column in browser.table.tableColumns { column.width = Self.smokeColumnWidths[column.identifier.rawValue]! }
-        browser.table.sortDescriptors = [NSSortDescriptor(key: "modified", ascending: false)]
-        guard let hidden = window.contentView.flatMap({ descendants(of: $0).first { ($0 as? NSButton)?.title == L10n.text("view.hidden") } }) as? NSButton else {
-            throw SmokeFailure.failed("Missing hidden-files checkbox")
+        for column in browser.table.tableColumns {
+            if let width = Self.smokeColumnWidths[column.identifier.rawValue] { column.width = width }
         }
-        hidden.performClick(nil)
+        browser.table.sortDescriptors = [NSSortDescriptor(key: "modified", ascending: false)]
+        // Hidden items left the window for the View menu (build 55).
+        guard let viewMenu = NSApp.mainMenu?.items.compactMap(\.submenu).first(where: { $0.indexOfItem(withTitle: L10n.text("view.hidden")) >= 0 }) else {
+            throw SmokeFailure.failed("Missing hidden-files menu item")
+        }
+        window.makeKeyAndOrderFront(nil)
+        viewMenu.performActionForItem(at: viewMenu.indexOfItem(withTitle: L10n.text("view.hidden")))
+        guard browser.session.showHidden else { throw SmokeFailure.failed("The View menu did not show hidden items") }
         try await waitForListing(browser)
         try await Task.sleep(for: .milliseconds(300))
         guard ExplorerStyle.browserPreferences.columnOrder == Self.smokeColumnOrder else { throw SmokeFailure.failed("Column notifications did not save layout") }
@@ -1381,16 +1469,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let originalDirectory = browser.session.history.current.url
         browser.navigate(.visit(image.deletingLastPathComponent()))
         try await waitForListing(browser)
-        guard let content = browser.window?.contentView else { throw SmokeFailure.failed("Missing Explorer window") }
-        func visibleButton(_ id: String) -> NSButton? {
-            descendants(of: content).compactMap { $0 as? NSButton }.first {
-                $0.accessibilityIdentifier() == id && !$0.isHiddenOrHasHiddenAncestor
+        // The OCR commands live in the "More" menu of the command bar: always listed, enabled
+        // only for a selection they apply to.
+        func command(_ id: String) throws -> NSMenuItem {
+            guard let item = browser.moreMenu.items.first(where: { $0.identifier?.rawValue == id }) else {
+                throw SmokeFailure.failed("Missing command in the More menu: " + id)
             }
+            return item
         }
-        let extractID = "explorer.toolbar.extractText", pdfID = "explorer.toolbar.searchablePDF"
+        func run(_ item: NSMenuItem) {
+            if let action = item.action { NSApp.sendAction(action, to: item.target, from: item) }
+        }
+        let extract = try command("explorer.toolbar.extractText"), searchablePDF = try command("explorer.toolbar.searchablePDF")
         browser.table.deselectAll(nil)
-        guard visibleButton(extractID) == nil, visibleButton(pdfID) == nil else {
-            throw SmokeFailure.failed("Document actions visible without a selection")
+        guard !browser.validateMenuItem(extract), !browser.validateMenuItem(searchablePDF) else {
+            throw SmokeFailure.failed("Document actions enabled without a selection")
         }
         func row(for source: URL) throws -> Int {
             let stem = source.deletingPathExtension().lastPathComponent
@@ -1407,21 +1500,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         browser.onExtractText = { extracted = $0 }
         browser.onBatchOCR = { pdfSources = $0 }
         browser.table.selectRowIndexes(IndexSet(integer: imageRow), byExtendingSelection: false)
-        guard let extract = visibleButton(extractID), extract.isEnabled,
-              let singlePDF = visibleButton(pdfID), singlePDF.isEnabled else {
+        guard browser.validateMenuItem(extract), browser.validateMenuItem(searchablePDF) else {
             throw SmokeFailure.failed("Missing OCR toolbar actions for an image")
         }
-        extract.performClick(nil)
-        singlePDF.performClick(nil)
+        run(extract)
+        run(searchablePDF)
         guard extracted?.standardizedFileURL == image.standardizedFileURL,
               pdfSources.map(\.standardizedFileURL) == [image.standardizedFileURL] else {
             throw SmokeFailure.failed("Single-file OCR toolbar action used the wrong selection")
         }
         browser.table.selectRowIndexes(IndexSet([imageRow, pdfRow]), byExtendingSelection: false)
-        guard visibleButton(extractID) == nil, let multiplePDF = visibleButton(pdfID), multiplePDF.isEnabled else {
+        guard !browser.validateMenuItem(extract), browser.validateMenuItem(searchablePDF) else {
             throw SmokeFailure.failed("Incorrect OCR toolbar for a multiple selection")
         }
-        multiplePDF.performClick(nil)
+        run(searchablePDF)
         guard Set(pdfSources.map(\.standardizedFileURL)) == Set([image.standardizedFileURL, pdf.standardizedFileURL]) else {
             throw SmokeFailure.failed("PDF toolbar action did not receive both selected documents")
         }
@@ -1661,7 +1753,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         try await service.grant(grant); try await service.setEnabled(true)
         for language: AppLanguage in [.english, .german, .japanese, .portuguese] {
             changeLanguage(language)
-            guard let menu = NSApp.mainMenu?.item(withTitle: L10n.text("menu.view"))?.submenu,
+            // Options lives in the application's own menu, the first of the bar.
+            guard let menu = NSApp.mainMenu?.items.first?.submenu,
                   menu.item(withTitle: L10n.text("automation.title")) == nil,
                   let options = menu.item(withTitle: L10n.text("options.title")), let action = options.action,
                   NSApp.sendAction(action, to: options.target, from: options),
@@ -2353,9 +2446,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         original.table.sortDescriptors = [NSSortDescriptor(key: "size", ascending: false)]
         for language in AppLanguage.allCases where language != .system {
             guard let previous = controller else { throw SmokeFailure.failed("Lost window") }
-            previous.languagePicker.selectItem(at: AppLanguage.allCases.firstIndex(of: language)!)
-            // Invoke the picker action without depending on a pop-up menu's mouse tracking loop.
-            if let action = previous.languagePicker.action { NSApp.sendAction(action, to: previous.languagePicker.target, from: previous.languagePicker) }
+            previous.onLanguageChange?(language)
             guard let current = controller, current.workspace === workspace,
                   workspace.activeID == activeID, workspace.tabs.map(\.id) == tabIDs,
                   current.address.stringValue == root.path,
@@ -2525,9 +2616,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             window.makeKeyAndOrderFront(nil)
             content.layoutSubtreeIfNeeded()
             let buttons = descendants(of: content).compactMap { $0 as? OutlinedButton }
-            guard let open = buttons.first(where: { $0.accessibilityIdentifier() == "explorer.command.open" }),
-                  let copy = buttons.first(where: { $0.accessibilityIdentifier() == "explorer.command.copyPath" }),
+            // The command bar: Copy stands for the commands that need a selection.
+            guard let copy = buttons.first(where: { $0.accessibilityIdentifier() == "explorer.command.copy" }),
+                  let delete = buttons.first(where: { $0.accessibilityIdentifier() == "explorer.command.delete" }),
+                  buttons.contains(where: { $0.accessibilityIdentifier() == "explorer.command.new" }),
                   buttons.count >= 10 else { throw SmokeFailure.failed("Toolbar style or actions missing") }
+            func openSelection() {
+                if let action = browser.table.doubleAction { NSApp.sendAction(action, to: browser.table.target, from: browser.table) }
+            }
             let previewWasVisible = browser.previewPaneVisible
             if !previewWasVisible { browser.togglePreviewPane(nil) }
             content.layoutSubtreeIfNeeded()
@@ -2540,25 +2636,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 }
             }
             if !previewWasVisible { browser.togglePreviewPane(nil) }
+            // The folders of the address trail and the titles of the menu strip are quiet buttons,
+            // lower than the rest by design.
             for button in buttons {
-                guard button.frame.height >= 28, button.target != nil, button.action != nil,
+                guard button.frame.height >= (button.quiet ? 20 : 28), button.target != nil, button.action != nil,
                       button.frame.height >= (button.font?.ascender ?? 0) - (button.font?.descender ?? 0) else {
                     throw SmokeFailure.failed("Button content clipped or action/focus missing")
                 }
             }
             browser.table.deselectAll(nil)
             let clipboard = NSPasteboard.general.changeCount
-            copy.performClick(nil); open.performClick(nil)
-            guard !open.isEnabled, !copy.isEnabled, clipboard == NSPasteboard.general.changeCount,
+            copy.performClick(nil); delete.performClick(nil)
+            guard !delete.isEnabled, !copy.isEnabled, clipboard == NSPasteboard.general.changeCount,
                   browser.session.history.current.url.path == root.path else {
                 throw SmokeFailure.failed("Disabled toolbar action executed")
             }
             try select("Documents", in: browser)
-            guard open.isEnabled, copy.isEnabled else { throw SmokeFailure.failed("Selected file commands stayed disabled") }
+            guard delete.isEnabled, copy.isEnabled else { throw SmokeFailure.failed("Selected file commands stayed disabled") }
             copy.performClick(nil)
-            guard NSPasteboard.general.string(forType: .string) == root.appendingPathComponent("Documents").path else {
-                throw SmokeFailure.failed("Outlined Copy path lost native action")
+            // Copying files is asynchronous, and goes to the pasteboard the commands use.
+            func copied() -> Bool {
+                FileClipboard.readURLs(from: FileCommands.shared.pasteboard, allowPrivateLocalReferences: true).map(\.lastPathComponent) == ["Documents"]
             }
+            try await waitForCondition("Outlined Copy lost native action") { copied() }
             let shown = ExplorerStyle.preferences.showPreviewPane
             browser.previewButton.performClick(nil)
             guard ExplorerStyle.preferences.showPreviewPane != shown,
@@ -2571,11 +2671,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             guard window.makeFirstResponder(copy), window.firstResponder === copy else {
                 throw SmokeFailure.failed("Toolbar button cannot receive keyboard focus")
             }
-            let beforeSpace = NSPasteboard.general.changeCount
+            let beforeSpace = FileCommands.shared.pasteboard.changeCount
             try sendKey(" ", code: 49, flags: [], to: browser)
-            guard NSPasteboard.general.changeCount > beforeSpace,
-                  NSPasteboard.general.string(forType: .string) == root.appendingPathComponent("Documents").path else {
-                throw SmokeFailure.failed("Focused button did not activate with Space")
+            try await waitForCondition("Focused button did not activate with Space") {
+                FileCommands.shared.pasteboard.changeCount > beforeSpace && copied()
             }
             if let index = arguments.firstIndex(of: "--preview"), arguments.indices.contains(index + 1) {
                 let base = URL(fileURLWithPath: arguments[index + 1]).deletingPathExtension().path
@@ -2597,9 +2696,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 try browser.savePreview(to: URL(fileURLWithPath: base + "-buttons-\(Int(size))-disabled.png"))
             }
             try select("Documents", in: browser)
-            open.performClick(nil); try await waitForListing(browser)
+            openSelection(); try await waitForListing(browser)
             guard browser.session.history.current.url.lastPathComponent == "Documents" else {
-                throw SmokeFailure.failed("Outlined Open lost navigation action")
+                throw SmokeFailure.failed("Opening the selection lost its navigation action")
             }
             guard let parent = browser.breadcrumbs.arrangedSubviews.compactMap({ $0 as? BreadcrumbButton })
                 .first(where: { $0.destination?.path == root.path }) else { throw SmokeFailure.failed("Parent breadcrumb missing") }
@@ -3000,9 +3099,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
             if entry.isPackage { guard cell.icon.contentTintColor == nil else { throw SmokeFailure.failed("Application icon lost native colors") } }
             else {
+                // Drawn icons carry their own colours: a tint would flatten them.
                 let descriptor = FileTypeIcon.appearance(for: entry)
                 guard NSImage(systemSymbolName: descriptor.symbol, accessibilityDescription: nil) != nil,
-                      cell.icon.contentTintColor != nil else { throw SmokeFailure.failed("Missing file type symbol") }
+                      cell.icon.contentTintColor == nil else { throw SmokeFailure.failed("Missing file type icon") }
             }
         }
         guard browser.session.entries.first(where: { $0.url.lastPathComponent == "10-Alias.pdf" })?.isAlias == true else {
@@ -3651,7 +3751,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         guard let window = browser.window else { throw SmokeFailure.failed("Missing browser window") }
         window.makeFirstResponder(table)
-        let point = browser.address.convert(NSPoint(x: 14, y: browser.address.bounds.midY), to: nil)
+        let point = browser.address.convert(NSPoint(x: browser.address.bounds.maxX - 14, y: browser.address.bounds.midY), to: nil)
         func clickAddress(count: Int = 1) throws {
             func event(_ type: NSEvent.EventType) throws -> NSEvent {
                 guard let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
@@ -3690,7 +3790,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             try sendKey("a", code: 0, flags: flags, to: browser)
             guard editor.selectedRange() == fullRange, browser.window?.firstResponder === editor,
                   table.selectedRowIndexes == IndexSet(integer: row) else {
-                throw SmokeFailure.failed("Address select all failed for \(flags)")
+                throw SmokeFailure.failed("Address select all failed for \(flags): range \(editor.selectedRange()) of \(fullRange), responder \(String(describing: browser.window?.firstResponder)), rows \(table.selectedRowIndexes.count), active \(NSApp.isActive), key \(browser.window?.isKeyWindow == true)")
             }
             let selection = flags == .control ? fullRange : text.range(of: text.lastPathComponent, options: .backwards)
             guard selection.location != NSNotFound, selection.length > 0 else { throw SmokeFailure.failed("Missing address text") }
@@ -3786,6 +3886,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         window.makeKeyAndOrderFront(nil)
         let table = browser.table
         let column = table.column(withIdentifier: NSUserInterfaceItemIdentifier("name"))
+        var debugClick = ""
         func click(_ name: String, count: Int = 1) throws {
             guard let row = (0..<table.numberOfRows).first(where: {
                 (table.view(atColumn: column, row: $0, makeIfNecessary: true) as? FileNameCell)?.label.stringValue == name
@@ -3793,6 +3894,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 throw SmokeFailure.failed("Missing rename fixture: " + name)
             }
             let point = cell.label.convert(NSPoint(x: 6, y: cell.label.bounds.midY), to: nil)
+            let hit = window.contentView?.superview?.hitTest(point)
+            debugClick = "point \(point) label \(cell.label.frame) cell \(cell.frame) row \(row) hit \(String(describing: hit.map { type(of: $0) })) tableRow \(table.row(at: table.convert(point, from: nil))) key \(window.isKeyWindow) sheet \(window.attachedSheet != nil)"
             func event(_ type: NSEvent.EventType) throws -> NSEvent {
                 guard let e = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
                     timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
@@ -3807,7 +3910,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         ExplorerStyle.preferences.setShowFileExtensions(false)
         try click("Original")
         try await settle()
-        guard table.numberOfSelectedRows == 1, editor() == nil else { throw SmokeFailure.failed("First click must select") }
+        guard table.numberOfSelectedRows == 1, editor() == nil else { throw SmokeFailure.failed("First click must select: rows \(table.numberOfSelectedRows), responder \(type(of: window.firstResponder as Any)), editor \(editor()?.string ?? "-"), mode \(browser.viewMode), \(debugClick)") }
         try click("Original")
         try await settle()
         guard let first = editor(), first.string == "Original.txt", first.selectedRange().length == 8 else {
@@ -3845,8 +3948,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                   }) else { throw SmokeFailure.failed("Missing rename dialog") }
             cancel.performClick(nil)
         }
-        try cancelRenameDialog()
-        try await waitForCondition("F2 sheet dismissed") { window.attachedSheet == nil }
+        // F2 renames in the row itself, like the second click; the dialog is left to the context menu.
+        guard window.attachedSheet == nil, let third = editor(), third.string == "Changed.txt" else {
+            throw SmokeFailure.failed("F2 must edit the name in the row")
+        }
+        try sendKey("\u{1b}", code: 53, flags: [], to: browser)
+        guard editor() == nil, fm.fileExists(atPath: renamed.path) else { throw SmokeFailure.failed("Escape after F2 changed the file") }
         guard let menu = table.menu else { throw SmokeFailure.failed("Missing context menu") }
         browser.rebuildContextMenu(menu, entries: [FileEntry(url: renamed, name: renamed.lastPathComponent, isDirectory: false)])
         let index = menu.indexOfItem(withTitle: L10n.text("command.rename"))

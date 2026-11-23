@@ -11,6 +11,8 @@ public final class BrowserViewPreferences {
 
     enum Keys {
         static let confirmDeletion = "browser.confirmDeletion"
+        static let expandTree = "browser.expandTreeToOpenFolder"
+        static let autoplayMedia = "browser.autoplayMedia"
         static let columns = "browserView.columns"
         static let sortKey = "browserView.sortKey"
         static let sortAscending = "browserView.sortAscending"
@@ -25,6 +27,18 @@ public final class BrowserViewPreferences {
     public var confirmDeletion: Bool {
         get { boolean(forKey: Keys.confirmDeletion, fallback: true) }
         set { defaults.set(newValue, forKey: Keys.confirmDeletion) }
+    }
+
+    /// Whether a video or a sound opened in the media viewer starts playing by itself.
+    public var autoplayMedia: Bool {
+        get { boolean(forKey: Keys.autoplayMedia, fallback: true) }
+        set { defaults.set(newValue, forKey: Keys.autoplayMedia) }
+    }
+    /// Whether the folder tree opens its branches to show the folder open in the list. On by
+    /// default; when off, the tree only highlights that folder if it is already visible.
+    public var expandTreeToOpenFolder: Bool {
+        get { boolean(forKey: Keys.expandTree, fallback: true) }
+        set { defaults.set(newValue, forKey: Keys.expandTree) }
     }
 
     public var columnOrder: [String] {

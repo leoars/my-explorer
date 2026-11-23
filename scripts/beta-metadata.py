@@ -172,8 +172,7 @@ def verify_designated_requirement(path):
 
 
 def verify_signing(app):
-    metadata_path = app / "Contents/Resources/BuildInfo.json"
-    metadata = read_json(metadata_path) if metadata_path.is_file() else None
+    metadata = read_json(app / "Contents/Resources/BuildInfo.json")
     identifier = app_info(app)["bundleIdentifier"]
     helper = app / "Contents/MacOS/myexplorer-cli"
     run(["/usr/bin/codesign", "--verify", "--strict", "--deep", str(app)])
@@ -184,7 +183,7 @@ def verify_signing(app):
         raise RuntimeError("Code signature identifiers do not match the bundle")
     if any(main[key] != child[key] for key in ["kind", "authority", "team"]):
         raise RuntimeError("App and helper were signed with different identities")
-    if metadata is not None and metadata.get("signing") != main["kind"]:
+    if metadata.get("signing") != main["kind"]:
         raise RuntimeError("BuildInfo signing does not match the actual signature")
     verify_designated_requirement(app)
     verify_designated_requirement(helper)

@@ -47,6 +47,12 @@ public final class DirectorySession {
     private var refreshAfterLoading = false
     private var observationEnabled = true
     private var generation = 0
+    /// Items taken out by `forget`, with the last reading that had begun by then. A reading that
+    /// began before an item was removed may still list it, and must not bring it back.
+    private var forgotten: [String: Int] = [:]
+    /// Items put in by `replace` (a rename shown at once), kept the same way: a reading that
+    /// began before the rename lists the old name, and must not undo what is on screen.
+    private var placed: [String: (entry: FileEntry, reading: Int)] = [:]
     private var task: Task<Void, Never>?
 
     public init(url: URL, reader: any DirectoryReading = DirectoryReader(), observer: (any DirectoryChangeObserving)? = nil, showHidden: Bool = false) {
@@ -118,7 +124,15 @@ public final class DirectorySession {
                     committed.remember(selection: self.history.current.selectedPaths, scrollOffset: self.history.current.scrollOffset)
                 }
                 self.history = committed
-                self.entries = result
+                // A reading begun after the removal is the truth; older ones are filtered.
+                self.forgotten = self.forgotten.filter { $0.value >= request }
+                self.placed = self.placed.filter { $0.value.reading >= request }
+                var listed = self.forgotten.isEmpty ? result : result.filter { self.forgotten[$0.id] == nil }
+                if !self.placed.isEmpty {
+                    let present = Set(listed.map(\.id))
+                    listed.append(contentsOf: self.placed.values.map(\.entry).filter { !present.contains($0.id) })
+                }
+                self.entries = listed
                 self.history.remember(selection: self.history.current.selectedPaths.intersection(Set(result.map(\.id))),
                                       scrollOffset: self.history.current.scrollOffset)
                 self.isLoading = false
@@ -169,6 +183,46 @@ public final class DirectorySession {
                 self.scheduleRefresh()
             }
         }
+    }
+
+    /// Drops items known to be gone from the listing at hand, ahead of the reading that confirms
+    /// it: a large folder takes seconds to read again. False when none of them was listed.
+    @discardableResult
+    public func forget(_ ids: Set<String>) -> Bool {
+        for id in ids { forgotten[id] = generation }
+        let kept = entries.filter { !ids.contains($0.id) }
+        guard kept.count != entries.count else { return false }
+        entries = kept
+        history.remember(selection: history.current.selectedPaths.subtracting(ids), scrollOffset: history.current.scrollOffset)
+        return true
+    }
+
+    /// Puts an item's new name in the listing at hand, ahead of the reading that confirms it.
+    /// False when the item was not listed.
+    @discardableResult
+    public func replace(_ id: String, with entry: FileEntry) -> Bool {
+        guard let index = entries.firstIndex(where: { $0.id == id }) else { return false }
+        if id != entry.id {
+            forgotten[id] = generation
+            forgotten[entry.id] = nil
+            placed[id] = nil
+            placed[entry.id] = (entry, generation)
+        }
+        entries.removeAll { $0.id == entry.id }
+        entries[min(index, entries.count - 1)] = entry
+        var selection = history.current.selectedPaths
+        if selection.remove(id) != nil { selection.insert(entry.id) }
+        history.remember(selection: selection, scrollOffset: history.current.scrollOffset)
+        return true
+    }
+
+    /// Reloads the current folder the way a watched change does: the view stays usable and keeps
+    /// its selection and scroll position. For changes that do not move or rename anything, such as
+    /// asking iCloud to download an item.
+    public func refreshKeepingView() {
+        if isLoading { refreshAfterLoading = true; return }
+        onWillAutoRefresh?()
+        _ = performNavigation(.reload, automatic: true)
     }
 
     private func scheduleRefresh() {

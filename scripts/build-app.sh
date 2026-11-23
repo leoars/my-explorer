@@ -78,11 +78,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 stage_root="$(mktemp -d "$PWD/dist/.my-explorer-build.XXXXXX")"
 staged_app="$stage_root/My Explorer.app"
-# A source archive builds without Git history. Include provenance in a release checkout.
-metadata_state="$stage_root/source-state.json"
-if [[ "$(git rev-parse --show-toplevel 2>/dev/null || true)" == "$PWD" ]] && git rev-parse --verify HEAD >/dev/null 2>&1; then
-  python3 scripts/beta-metadata.py capture-state --output "$metadata_state"
-fi
+python3 scripts/beta-metadata.py capture-state --output "$stage_root/source-state.json"
 swift build "${build_arguments[@]}"
 binary_dir="$(swift build "${build_arguments[@]}" --show-bin-path)"
 mkdir -p "$staged_app/Contents/MacOS" "$staged_app/Contents/Resources"
@@ -113,9 +109,7 @@ cp LICENSE "$staged_app/Contents/Resources/LICENSE"
 cp THIRD_PARTY_NOTICES.md "$staged_app/Contents/Resources/THIRD_PARTY_NOTICES.md"
 cp Resources/AppIcon.icns "$staged_app/Contents/Resources/AppIcon.icns"
 python3 scripts/beta-metadata.py stage-localizations --binary-dir "$binary_dir" --target "$staged_app/Contents/Resources/MyExplorer_ExplorerLocalization.bundle"
-if [[ -f "$metadata_state" ]]; then
-  python3 scripts/beta-metadata.py write-build-info --state "$stage_root/source-state.json" --app "$staged_app" --configuration "$configuration"
-fi
+python3 scripts/beta-metadata.py write-build-info --state "$stage_root/source-state.json" --app "$staged_app" --configuration "$configuration"
 # Signing does not notarize or publish the app; scripts/notarize-app.sh does the notarization.
 codesign --force --sign "$signing_identity" --identifier "$bundle_identifier" "${sign_options[@]}" ${app_entitlements[@]+"${app_entitlements[@]}"} "$staged_app"
 # The mode above comes from the identity's name. Refuse a Developer ID signature reached another
@@ -128,9 +122,7 @@ fi
 codesign --verify --strict --deep "$staged_app"
 python3 scripts/beta-metadata.py verify-signing --app "$staged_app"
 "$staged_app/Contents/MacOS/MyExplorer" --verify-localizations
-if [[ -f "$metadata_state" ]]; then
-  python3 scripts/beta-metadata.py verify-state --state "$stage_root/source-state.json"
-fi
+python3 scripts/beta-metadata.py verify-state --state "$stage_root/source-state.json"
 # Keep the previous bundle intact until the complete replacement passes verification.
 if [[ -e "$app_path" || -L "$app_path" ]]; then mv "$app_path" "$stage_root/previous.app"; fi
 installing=1

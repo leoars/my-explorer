@@ -2,15 +2,132 @@
 
 [English](README.md) · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Italiano](README.it.md)
 
-My Explorer é um gerenciador de arquivos nativo para macOS. Ele reúne a árvore de pastas, as abas e a visualização em detalhes familiares a quem usa o Explorador de Arquivos do Windows com a Lixeira, os volumes e os aplicativos do Mac.
+**Suíte My:** **My Explorer** · [My Notepad](https://github.com/leoars/My-Notepad) · [My Paint](https://github.com/leoars/my-paint)
 
-![Lista em português filtrada pelo nome do arquivo, com duas abas abertas](docs/screenshots/navigation-pt-BR.png)
+My Explorer é um gerenciador de arquivos nativo para macOS. Ele reúne árvore de pastas, abas, barra de comandos e várias visualizações com a Lixeira, os volumes, o iCloud e os aplicativos do Mac.
 
-## Instalar a versão 30
+![Pasta de fotos em Ícones grandes, com miniaturas, uma foto selecionada e o painel de visualização aberto](docs/screenshots/navigation-pt-BR.png)
 
-Abra o DMG, copie **My Explorer** para **Aplicativos**, ejete a imagem de disco e abra o aplicativo. Esta versão foi assinada com Developer ID e notarizada pela Apple. [Baixar para Mac](https://github.com/leoars/my-explorer/releases/latest)
+## Instalar
 
-A versão 30 é a primeira assinada com Developer ID e notarizada pela Apple, então o macOS a abre sem a etapa extra de segurança. Depois que você abre o aplicativo uma vez, o ícone aparece no Finder sem a moldura cinza. Se você está atualizando de uma versão anterior, o macOS pode pedir de novo as permissões de privacidade e o acesso às senhas que o aplicativo guardou nas Chaves.
+Abra o DMG, copie **My Explorer** para **Aplicativos**, ejete a imagem de disco e abra o aplicativo. As versões publicadas são assinadas com Developer ID e notarizadas pela Apple. [Baixar para Mac](https://github.com/leoars/my-explorer/releases/latest)
+
+Requer macOS 14 ou posterior, em Apple Silicon ou Intel. Se você está atualizando de uma versão anterior, o macOS pode pedir de novo as permissões de privacidade e o acesso às senhas que o aplicativo guardou nas Chaves.
+
+## Funcionalidades
+
+### Navegação
+
+- Árvore de pastas com Pasta pessoal, Área de Trabalho, Documentos, Downloads, Imagens, Música, Vídeos, Este Mac, Volumes, Armazenamento em nuvem, Buscas salvas, iPhone e iPad e Lixeira.
+- Abas, cada uma com histórico, seleção, ordenação e filtro próprios. O botão de nova aba fica logo depois da última.
+- Uma barra de endereço só: mostra a trilha de pastas clicável e vira o caminho em texto quando você clica nela, com sugestões enquanto digita.
+- **Voltar**, **Avançar**, **Subir** e **Atualizar**. A lista se atualiza sozinha quando os arquivos mudam por fora.
+- **Filtrar esta pasta** pelo nome, e **Pesquisar arquivos…** por nome, extensão, conteúdo, data e etiquetas, nesta pasta ou no Mac inteiro. As buscas podem ser salvas na árvore.
+- Menus dentro da janela (Arquivo, Editar, Exibir, Navegar, Idioma), além da barra de menus do macOS.
+
+### Visualizações e classificação
+
+- Cinco modos, lembrados por pasta: **Detalhes**, **Lista**, **Ícones pequenos**, **Ícones grandes** e **Galeria**.
+- Em Ícones grandes e na Galeria, fotos e vídeos aparecem com miniatura.
+- **Classificar** por nome, data de modificação, tipo ou tamanho, em ordem crescente ou decrescente.
+- Em Detalhes, arraste os cabeçalhos para mudar a ordem ou a largura das colunas.
+- **Itens ocultos** e **Extensões de nomes de arquivo** no menu Exibir.
+
+![Pasta de documentos em Detalhes, com as colunas Nome, Data de modificação, Tipo e Tamanho](docs/screenshots/details-pt-BR.png)
+
+### Operações com arquivos
+
+- Barra de comandos com **Novo**, **Recortar**, **Copiar**, **Colar**, **Renomear**, **Compartilhar** e **Excluir**.
+- Copiar e mover com progresso, pausa e verificação. Se o nome já existir: substituir, mesclar pastas, manter ambos ou ignorar.
+- **Desfazer** para até 20 cópias, movimentações e exclusões da sessão.
+- Renomear no próprio lugar com F2 ou com um segundo clique lento no nome.
+- Lixeira na árvore, com **Restaurar**, **Excluir definitivamente…** e **Esvaziar Lixeira…**.
+- **Compactar para ZIP** e **Extrair ZIP**.
+- Arrastar e soltar dentro do aplicativo, para outros aplicativos e a partir deles.
+- **Propriedades** com caminho e permissões; em um volume, capacidade total, usada e livre.
+- **Abrir com…**, **Compartilhar…** (inclusive por AirDrop), **Editar etiquetas do Finder…** e **Copiar caminho**.
+- Ações rápidas para imagens e PDFs: girar, converter em JPEG ou PNG e criar PDF.
+
+### Painel de visualização e visualizador de mídia
+
+- O painel de visualização mostra imagens, vídeo e áudio com controles de reprodução, PDF com passagem de páginas e os demais tipos pelo Quick Look.
+- O visualizador abre imagens, vídeos e áudios em janela própria, avança pelos arquivos da pasta com as setas e dá zoom de 1% a 800%.
+- Imagens animadas (WebP, GIF, APNG) são reproduzidas.
+- A reprodução automática de vídeos pode ser desligada em Opções.
+
+### Reconhecimento de texto (OCR)
+
+- **Extrair texto…** de imagens e PDFs digitalizados, com detecção do idioma, para copiar ou salvar como TXT.
+- **Criar PDF pesquisável…**, um arquivo por vez ou em lote de até 50.
+- Tudo é feito no próprio Mac.
+
+### iCloud
+
+- Estado de cada item do iCloud Drive na lista: no Mac, somente on-line, baixando ou enviando.
+- Baixar um arquivo com um clique, com o progresso no ícone, e **Remover download deste Mac**.
+- Baixar tudo de uma pasta ou só a seleção, com confirmação para muitos arquivos e uma reserva de espaço em disco que nunca é ultrapassada.
+
+### Armazenamento em nuvem
+
+- Amazon S3: conectar um bucket, navegar, copiar entre o Mac e a nuvem, mover, criar pastas e excluir. As credenciais ficam nas Chaves do macOS.
+- Azure Blob Storage e Google Cloud Storage são experimentais.
+
+### Pastas protegidas
+
+- **Proteger pasta…** guarda uma pasta em um cofre cifrado com AES-256, aberto por senha.
+- Bloqueio automático ao bloquear a sessão, ao dormir e ao sair.
+
+### Git
+
+- Marcas de estado nos arquivos de um repositório local e a branch na barra de status.
+- **Ver alterações** e **Ver histórico**, preparar e retirar arquivos, commit, trocar de branch, fetch, pull e push, usando o Git instalado no Mac.
+
+### Volumes e rede
+
+- Ejetar discos, **Conectar ao servidor…** por SMB e importar fotos de um iPhone ou iPad.
+
+### Opções e aparência
+
+- Restaurar as abas ou a última pasta ao abrir, confirmar exclusões, expandir a árvore até a pasta aberta e idioma da interface.
+- Tamanhos de fonte separados para a árvore, a lista, os menus e as barras. Tema claro ou escuro, seguindo o sistema.
+- Atualizações: o aplicativo pode verificar novas versões ao abrir e instalar a que você aceitar.
+- Disponível em português, inglês, espanhol, francês, alemão, japonês, coreano e italiano, com troca imediata.
+
+### Automação
+
+- Uma linha de comando e um servidor MCP permitem que um assistente de IA trabalhe em pastas que você autorizar, por 24 horas. Experimental e desligado por padrão: **Opções → Integrações → Conectar um assistente de IA**.
+
+## Atalhos
+
+Os atalhos com Ctrl funcionam como você já conhece, inclusive nos campos de texto; os equivalentes com ⌘ também.
+
+| Teclas | Ação |
+| --- | --- |
+| Ctrl+T / Ctrl+W | Abrir ou fechar uma aba |
+| Ctrl+Tab / Ctrl+Shift+Tab | Próxima aba ou aba anterior |
+| Ctrl+L | Editar o endereço |
+| Ctrl+F / F3 | Filtrar a pasta atual |
+| ⇧⌘F | Pesquisar arquivos |
+| Ctrl+X / Ctrl+C / Ctrl+V | Recortar, copiar e colar |
+| Ctrl+Z | Desfazer a última operação |
+| Ctrl+A | Selecionar tudo |
+| F2 | Renomear |
+| Del (Fn+⌫) | Excluir a seleção |
+| Enter / Backspace | Abrir o item ou voltar |
+| Option+← / → / ↑ | Voltar, avançar ou subir |
+| F5 / Ctrl+R | Atualizar |
+| Ctrl+Shift+N | Nova pasta |
+| Option+Enter | Propriedades |
+| Ctrl++ / Ctrl+- | Aumentar ou diminuir as fontes |
+| ⌘ , | Opções |
+
+## Parte da suíte My
+
+O My Explorer faz parte da suíte My: três aplicativos para macOS simples e diretos, com os menus e os atalhos de sempre.
+
+- **My Explorer** (este repositório): gerenciador de arquivos.
+- **[My Notepad](https://github.com/leoars/My-Notepad)**: editor de texto simples. Com ele instalado, o duplo clique em um arquivo .txt abre o texto no My Notepad, e o menu de contexto ganha **Editar com o My Notepad**.
+- **[My Paint](https://github.com/leoars/my-paint)**: editor de imagens simples. Com ele instalado, o menu de contexto das imagens ganha **Editar com o My Paint**.
 
 ## Instalar a partir do código-fonte
 
@@ -22,60 +139,6 @@ open "dist/My Explorer.app"
 ```
 
 Para instalar, feche o aplicativo e copie `dist/My Explorer.app` para Aplicativos. Você também pode abrir `Package.swift` no Xcode. O build local usa assinatura ad hoc por padrão.
-
-## Navegar e organizar arquivos
-
-Clique na árvore para navegar pelos volumes ou digite um caminho na barra de endereço. Cada aba mantém seu próprio histórico, ordenação e seleção. O filtro pesquisa os nomes na pasta aberta. Arraste os cabeçalhos para mudar a ordem ou a largura das colunas.
-
-Copie, recorte e cole arquivos ou pastas. Se o nome já existir, escolha substituir, manter ambos ou ignorar. Desfazer recupera até 20 operações locais de cópia ou movimentação da sessão. Use o menu de contexto para renomear, compartilhar ou criar e extrair ZIPs.
-
-Clique com o botão direito em um arquivo e escolha **Propriedades** para consultar seus detalhes. Em um volume na árvore, como Macintosh HD, o mesmo comando mostra a capacidade total, o espaço usado e o livre.
-
-Para renomear na lista, selecione o item, faça uma pausa e clique novamente no nome. Enter confirma e Esc cancela. O duplo clique abre o item. F2 e **Renomear** continuam abrindo o diálogo.
-
-Na sessão atual, Ctrl+Z ou ⌘Z restaura os itens da Lixeira para a pasta de origem. Se o nome estiver ocupado, escolha Cancelar para tentar depois ou Manter ambos para restaurar com um nome numerado.
-
-## Trabalhar com Git
-
-Dentro de um repositório local, os símbolos identificam arquivos modificados, novos, ignorados ou em conflito. No menu **Git → Ver alterações**, confira as diferenças da pasta ou dos arquivos selecionados. As alterações preparadas para commit aparecem separadas das que ainda estão na árvore de trabalho.
-
-![Repositório de exemplo em tema escuro com arquivos em diferentes estados Git](docs/screenshots/git-dark.png)
-
-Consulte o histórico da seleção e prepare ou retire arquivos do índice. O commit considera todos os arquivos preparados. Ações como trocar de branch, buscar, fazer pull ou push usam o Git instalado no Mac e pedem confirmação no Terminal.
-
-## Visualizar arquivos e reconhecer texto
-
-Ative o painel de visualização e selecione um arquivo local para inspecioná-lo na lista. Abra imagens, áudio ou vídeo no visualizador e avance com as setas. Para uma imagem ou PDF digitalizado, as ferramentas de OCR permitem extrair texto e criar um PDF pesquisável.
-
-![Painel lateral com a prévia do arquivo PNG selecionado](docs/screenshots/preview-light.png)
-
-## Pastas protegidas e armazenamento em nuvem
-
-No menu de uma pasta local, escolha **Proteger pasta**. No primeiro uso, cadastre a senha mestra e depois a senha da pasta. Para fazer backup, bloqueie a pasta e copie o pacote `.myexplorervault` inteiro. Enquanto estiver desbloqueado, outros aplicativos com as suas permissões poderão acessar os arquivos.
-
-Em Conexões de nuvem, configure um bucket S3, um contêiner Azure Blob ou um bucket do Google Cloud Storage. As credenciais ficam nas Chaves do macOS. A cópia funciona entre o Mac e a nuvem. Azure e Google Cloud têm cobertura com provedores simulados e permanecem experimentais.
-
-## Opções e atualizações
-
-Abra **Opções** com ⌘ , para restaurar abas ou a última pasta na próxima abertura. A opção **Confirmar para excluir arquivos** vem marcada. Ao desmarcá-la, Del envia a seleção local diretamente para a Lixeira. Na nuvem, a exclusão afeta o objeto remoto.
-
-Em **Opções**, o My Explorer pode verificar novas versões ao abrir. Se houver uma atualização, escolha atualizar agora, lembrar em sete dias ou pular a versão. **Verificar agora** permite consultar inclusive uma versão adiada ou pulada. O download só começa após sua confirmação.
-
-## Atalhos
-
-| ⌨ | Atalhos |
-| --- | --- |
-| ⌘ L | Editar o endereço |
-| ⌘ T / ⌘ W | Abrir ou fechar uma aba |
-| ⌃ Tab / ⌃ ⇧ Tab | Próxima aba ou aba anterior |
-| ⌘ F / F3 | Filtrar a pasta atual |
-| F2 | Renomear a seleção |
-| Del / Fn + ⌫ | Excluir a seleção |
-| ⌘ Z / Ctrl+Z | Desfazer operação local |
-
-## Automação local
-
-Para integrar a CLI ou um cliente MCP, abra **Opções → Integrações → Conectar um assistente de IA**, habilite a automação e conceda as permissões necessárias a uma pasta. A autorização expira em 24 horas. Mantenha o aplicativo aberto e importe a configuração gerada em `mcp.json` no cliente.
 
 ## Testar e contribuir
 

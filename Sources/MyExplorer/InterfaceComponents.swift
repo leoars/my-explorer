@@ -15,6 +15,7 @@ final class ExplorerSurface: NSView {
 enum ExplorerStyle {
     static var preferences = DisplayPreferences()
     static var browserPreferences = BrowserViewPreferences()
+    static var folderViewModes = FolderViewModes()
     static let accent = NSColor.systemBlue
     static func font(_ area: FontArea, offset: CGFloat = 0, weight: NSFont.Weight = .regular) -> NSFont {
         .systemFont(ofSize: max(9, CGFloat(preferences.fontSize(for: area)) + offset), weight: weight)
@@ -98,9 +99,21 @@ final class FileNameCell: NSTableCellView {
         iconWidth = icon.widthAnchor.constraint(equalToConstant: 22)
         iconHeight = icon.heightAnchor.constraint(equalToConstant: 22)
         imageView = icon; textField = label
-        NSLayoutConstraint.activate([
+        rowConstraints = [
             icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 8),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ]
+        tileConstraints = [
+            icon.centerXAnchor.constraint(equalTo: centerXAnchor),
+            icon.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            label.topAnchor.constraint(equalTo: icon.bottomAnchor, constant: 4),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4)
+        ]
+        NSLayoutConstraint.activate(rowConstraints + [
             iconWidth, iconHeight,
             gitBadge.widthAnchor.constraint(equalToConstant: 12),
             gitBadge.heightAnchor.constraint(equalToConstant: 12),
@@ -109,11 +122,30 @@ final class FileNameCell: NSTableCellView {
             shortcutBadge.widthAnchor.constraint(equalToConstant: 10),
             shortcutBadge.heightAnchor.constraint(equalToConstant: 10),
             shortcutBadge.leadingAnchor.constraint(equalTo: icon.leadingAnchor, constant: -2),
-            shortcutBadge.bottomAnchor.constraint(equalTo: icon.bottomAnchor, constant: 1),
-            label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 8),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor)
+            shortcutBadge.bottomAnchor.constraint(equalTo: icon.bottomAnchor, constant: 1)
         ])
+    }
+
+    /// The icon with the name beside it, as in a row of the list, or above it, as in a tile.
+    enum Arrangement { case row, tile(lines: Int) }
+    private var rowConstraints: [NSLayoutConstraint] = []
+    private var tileConstraints: [NSLayoutConstraint] = []
+    func arrange(_ arrangement: Arrangement) {
+        switch arrangement {
+        case .row:
+            NSLayoutConstraint.deactivate(tileConstraints); NSLayoutConstraint.activate(rowConstraints)
+            label.alignment = .natural
+            label.maximumNumberOfLines = 1
+            label.cell?.wraps = false
+            label.lineBreakMode = .byTruncatingMiddle
+        case .tile(let lines):
+            NSLayoutConstraint.deactivate(rowConstraints); NSLayoutConstraint.activate(tileConstraints)
+            label.alignment = .center
+            label.maximumNumberOfLines = lines
+            label.cell?.wraps = lines > 1
+            label.cell?.truncatesLastVisibleLine = true
+            label.lineBreakMode = lines > 1 ? .byWordWrapping : .byTruncatingMiddle
+        }
     }
     func setIconSize(_ side: CGFloat) {
         iconWidth.constant = side; iconHeight.constant = side
@@ -121,13 +153,121 @@ final class FileNameCell: NSTableCellView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
+/// The iCloud column of the file list: one small symbol for the item's state, as in Finder. The
+/// symbol is a button while the item can be downloaded.
+final class CloudStatusCell: NSView {
+    let button = NSButton()
+    /// Takes the place of the symbol while the item downloads: a spinner until iCloud reports
+    /// progress, then a circle that fills up.
+    let indicator = NSProgressIndicator()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        button.isBordered = false
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleProportionallyDown
+        // A state that cannot be clicked is still information: do not dim it.
+        (button.cell as? NSButtonCell)?.imageDimsWhenDisabled = false
+        button.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(button)
+        indicator.style = .spinning
+        indicator.controlSize = .small
+        indicator.minValue = 0; indicator.maxValue = 1
+        indicator.isDisplayedWhenStopped = true
+        indicator.isHidden = true
+        indicator.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(indicator)
+        NSLayoutConstraint.activate([
+            button.centerXAnchor.constraint(equalTo: centerXAnchor),
+            button.centerYAnchor.constraint(equalTo: centerYAnchor),
+            button.widthAnchor.constraint(equalToConstant: 22),
+            button.heightAnchor.constraint(equalToConstant: 20),
+            indicator.centerXAnchor.constraint(equalTo: centerXAnchor),
+            indicator.centerYAnchor.constraint(equalTo: centerYAnchor),
+            indicator.widthAnchor.constraint(equalToConstant: 16),
+            indicator.heightAnchor.constraint(equalToConstant: 16)
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// Symbol and tint for a state; nil when nothing is shown (not in iCloud, or already on this Mac).
+    static func appearance(for state: ICloudAvailability?) -> (symbol: String, color: NSColor)? {
+        switch state {
+        case .onlineOnly?: return ("icloud.and.arrow.down", .secondaryLabelColor)
+        case .downloading?: return ("arrow.down.circle", .controlAccentColor)
+        case .uploading?: return ("icloud.and.arrow.up", .controlAccentColor)
+        case .waiting?: return ("icloud", .secondaryLabelColor)
+        case .conflict?, .failed?: return ("exclamationmark.icloud", .systemOrange)
+        case .unknown?: return ("icloud.slash", .tertiaryLabelColor)
+        case .available?, nil: return nil
+        }
+    }
+
+    func configure(state: ICloudAvailability?, description: String?, canDownload: Bool, download: ICloudDownloadMonitor.Status? = nil) {
+        let appearance = Self.appearance(for: state)
+        button.image = appearance.flatMap { ExplorerStyle.symbol($0.symbol, description: description ?? "") }
+        button.contentTintColor = appearance?.color
+        button.isHidden = appearance == nil || download != nil
+        button.isEnabled = canDownload
+        button.toolTip = description
+        button.setAccessibilityLabel(description)
+        toolTip = description
+        switch download {
+        case nil:
+            indicator.stopAnimation(nil)
+            indicator.isHidden = true
+        case .waiting?:
+            indicator.isIndeterminate = true
+            indicator.isHidden = false
+            // Asked for every time: a cell put back by a reload has had its spinner stopped, and
+            // starting one that already turns does nothing.
+            indicator.startAnimation(nil)
+        case .fraction(let value)?:
+            if indicator.isIndeterminate { indicator.stopAnimation(nil); indicator.isIndeterminate = false }
+            indicator.doubleValue = value
+            indicator.isHidden = false
+        }
+        indicator.setAccessibilityLabel(description)
+    }
+}
+
+/// Column header that draws a clear arrow on the sorted column: up for ascending, down for
+/// descending. AppKit's own indicator is a faint chevron that is easy to miss.
+final class SortHeaderCell: NSTableHeaderCell {
+    private static let side: CGFloat = 12
+
+    override func sortIndicatorRect(forBounds rect: NSRect) -> NSRect {
+        NSRect(x: rect.maxX - Self.side - 8, y: rect.midY - Self.side / 2, width: Self.side, height: Self.side)
+    }
+
+    override func drawSortIndicator(withFrame cellFrame: NSRect, in controlView: NSView, ascending: Bool, priority: Int) {
+        guard priority == 0 else { return }
+        let configuration = NSImage.SymbolConfiguration(pointSize: 11, weight: .bold)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [.labelColor]))
+        let name = ascending ? "chevron.up" : "chevron.down"
+        guard let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(configuration) else {
+            super.drawSortIndicator(withFrame: cellFrame, in: controlView, ascending: ascending, priority: priority)
+            return
+        }
+        let slot = sortIndicatorRect(forBounds: cellFrame)
+        let size = image.size
+        let scale = min(1, slot.width / max(size.width, 1), slot.height / max(size.height, 1))
+        let target = NSRect(x: slot.midX - size.width * scale / 2, y: slot.midY - size.height * scale / 2,
+                            width: size.width * scale, height: size.height * scale)
+        image.draw(in: target, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+    }
+}
+
 @MainActor
 final class ExplorerTableView: NSTableView, @preconcurrency NSServicesMenuRequestor {
     private static let filenamesType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
     static let serviceTypes: [NSPasteboard.PasteboardType] = [.fileURL, filenamesType]
     var serviceSelection: (() -> [URL])?
-    private var serviceURLs: [URL] {
-        guard let urls = serviceSelection?(), !urls.isEmpty, urls.allSatisfy({
+    private var serviceURLs: [URL] { Self.serviceURLs(serviceSelection) }
+    /// What the selection offers to the Services menu; the grid of the other view modes shares it.
+    static func serviceURLs(_ selection: (() -> [URL])?) -> [URL] {
+        guard let urls = selection?(), !urls.isEmpty, urls.allSatisfy({
             $0.isFileURL && !SecureFolderService.isSessionURL($0) && !LocalTransferRecovery.isProtected($0)
         }) else { return [] }
         return urls
@@ -137,13 +277,15 @@ final class ExplorerTableView: NSTableView, @preconcurrency NSServicesMenuReques
         return super.validRequestor(forSendType: sendType, returnType: returnType)
     }
     func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
-        let urls = serviceURLs
-        guard !urls.isEmpty, !Set(types).isDisjoint(with: Self.serviceTypes) else { return false }
+        Self.write(serviceURLs, to: pboard, types: types)
+    }
+    static func write(_ urls: [URL], to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
+        guard !urls.isEmpty, !Set(types).isDisjoint(with: serviceTypes) else { return false }
         pboard.clearContents()
         if types.contains(.fileURL), !pboard.writeObjects(urls.map { $0 as NSURL }) { return false }
-        if types.contains(Self.filenamesType) {
-            pboard.addTypes([Self.filenamesType], owner: nil)
-            return pboard.setPropertyList(urls.map(\.path), forType: Self.filenamesType)
+        if types.contains(filenamesType) {
+            pboard.addTypes([filenamesType], owner: nil)
+            return pboard.setPropertyList(urls.map(\.path), forType: filenamesType)
         }
         return true
     }

@@ -20,8 +20,39 @@ public enum ICloudAvailability: String, Sendable {
         } else { self = .unknown }
     }
 
+    /// Above this many items a listing does not ask iCloud about each one (about a millisecond and
+    /// a half apiece, which made a folder of tens of thousands of items time out): it only tells
+    /// what is on this Mac from what is not, which the file system answers at once.
+    static let detailedListingLimit = 1_000
+
+    /// The coarse state of an item of an iCloud folder, from the file system alone.
+    static func coarse(at url: URL) -> ICloudAvailability {
+        var info = stat()
+        guard lstat(url.path, &info) == 0 else { return .unknown }
+        return info.st_flags & UInt32(SF_DATALESS) != 0 ? .onlineOnly : .available
+    }
+
     static func canRemoveDownload(_ values: URLResourceValues) -> Bool {
         Self(values) == .available && values.ubiquitousItemIsUploaded == true && values.isDirectory == false
+    }
+
+    /// The current state of one item, read fresh from the file system; nil when it is not in iCloud.
+    public static func current(at url: URL) -> ICloudAvailability? {
+        var fresh = url
+        fresh.removeAllCachedResourceValues()
+        guard let values = try? fresh.resourceValues(forKeys: keys.union([.isUbiquitousItemKey])),
+              values.isUbiquitousItem == true else { return nil }
+        return Self(values)
+    }
+
+    /// Whether the item's content is on this Mac, whatever else its state says (a conflict, an
+    /// upload in progress); nil when it is not in iCloud.
+    public static func isDownloaded(at url: URL) -> Bool? {
+        var fresh = url
+        fresh.removeAllCachedResourceValues()
+        guard let values = try? fresh.resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]),
+              values.isUbiquitousItem == true else { return nil }
+        return values.ubiquitousItemDownloadingStatus == .current || values.ubiquitousItemDownloadingStatus == .downloaded
     }
 
     public enum Operation: Sendable { case download, removeDownload }

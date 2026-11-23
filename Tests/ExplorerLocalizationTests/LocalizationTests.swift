@@ -20,6 +20,17 @@ struct LocalizationTests {
         }
     }
 
+    /// The interface names no trademark of another company's products.
+    @Test func noMicrosoftOrWindowsNamesInAnyLanguage() {
+        let localization = Localization(language: .english)
+        for language in AppLanguage.allCases where language != .system {
+            let named = localization.catalog(for: language).filter {
+                $0.value.localizedCaseInsensitiveContains("windows") || $0.value.localizedCaseInsensitiveContains("microsoft")
+            }
+            #expect(named.isEmpty, "\(language.rawValue): \(named.keys.sorted())")
+        }
+    }
+
     @Test func systemMatchesVariantsAndFallsBackToEnglish() {
         #expect(AppLanguage.resolve(["pt-PT"]) == .portuguese)
         #expect(AppLanguage.resolve(["en-GB"]) == .english)
