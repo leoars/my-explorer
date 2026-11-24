@@ -53,6 +53,7 @@ To install My Explorer, My Notepad and My Paint in one go, use the [My suite ins
 ### Preview pane and media viewer
 
 - The preview pane shows images, video and audio with playback controls, PDFs with page navigation, and other types through Quick Look.
+- Markdown files are shown formatted in the preview pane (headings, lists and task lists, tables, code with syntax highlighting, footnotes, images from the same folder), with a switch to the source text. Remote images are not downloaded, and links open only when clicked.
 - The viewer opens images, videos and audio in a window of its own, moves through the folder's files with the arrow keys and zooms from 1% to 800%.
 - Animated images (WebP, GIF, APNG) play.
 - Automatic video playback can be turned off in Options.

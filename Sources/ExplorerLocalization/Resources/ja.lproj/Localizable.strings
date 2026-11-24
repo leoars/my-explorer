@@ -230,6 +230,12 @@
 "preview.pdf.previous" = "前のページ";
 "preview.pdf.next" = "次のページ";
 "preview.pdf.page" = "%@ / %@ ページ";
+"preview.markdown.formatted" = "フォーマット済み";
+"preview.markdown.source" = "ソース";
+"preview.markdown.mode" = "Markdown の表示";
+"preview.markdown.image" = "画像: %@";
+"preview.markdown.image.untitled" = "画像";
+"preview.markdown.footnote.back" = "参照元に戻る";
 
 "font.increase" = "すべての文字を大きくする";
 "font.decrease" = "すべての文字を小さくする";

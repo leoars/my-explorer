@@ -8,8 +8,14 @@ struct PreviewThumbnail: @unchecked Sendable {
     let image: CGImage
 }
 
+/// A Markdown file read and parsed off the main thread, with its text for the source view.
+struct MarkdownPayload: Sendable {
+    let source: String
+    let document: MarkdownDocument
+}
+
 enum PreviewPreparation: Sendable {
-    case image(PreviewThumbnail), quickLook(URL), needsDownload, unavailable
+    case image(PreviewThumbnail), quickLook(URL), markdown(URL, MarkdownPayload), needsDownload, unavailable
 }
 
 /// One image decoder and a bounded LRU cache shared by rebuilt preview panes.
@@ -43,6 +49,16 @@ actor PreviewImageLoader {
     }
     private let maximumCost = 32 * 1024 * 1024
     private(set) var decodeCount = 0
+
+    /// A Markdown file that `prepare` passed to Quick Look is read and parsed here instead, outside
+    /// the actor, so a slow volume or a large file does not hold up the images of other panes.
+    /// Too large, unreadable or not UTF-8: it stays with Quick Look, as before.
+    nonisolated static func markdown(_ prepared: PreviewPreparation, entry: FileEntry) -> PreviewPreparation {
+        guard case .quickLook(let url) = prepared, MarkdownFile.isMarkdown(url) || MarkdownFile.isMarkdown(entry.url) else { return prepared }
+        guard case .text(let text) = MarkdownFile.load(url) else { return prepared }
+        guard !Task.isCancelled else { return .unavailable }
+        return .markdown(url, MarkdownPayload(source: text, document: MarkdownDocument.parse(text)))
+    }
 
     func prepare(_ entry: FileEntry, image: Bool, maximumEdge: Int) -> PreviewPreparation {
         guard !Task.isCancelled else { return .unavailable }

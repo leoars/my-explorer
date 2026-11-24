@@ -230,6 +230,12 @@
 "preview.pdf.previous" = "Page précédente";
 "preview.pdf.next" = "Page suivante";
 "preview.pdf.page" = "Page %@ sur %@";
+"preview.markdown.formatted" = "Mis en forme";
+"preview.markdown.source" = "Source";
+"preview.markdown.mode" = "Affichage Markdown";
+"preview.markdown.image" = "Image : %@";
+"preview.markdown.image.untitled" = "Image";
+"preview.markdown.footnote.back" = "Retour à la référence";
 
 "font.increase" = "Agrandir toutes les polices";
 "font.decrease" = "Réduire toutes les polices";

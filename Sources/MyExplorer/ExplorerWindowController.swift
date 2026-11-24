@@ -198,6 +198,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         }
         tree.onManageCloud = { [weak self] in self?.onManageCloud?() }
         previewPane.onExtractText = { [weak self] url in self?.onExtractText?(url) }
+        previewPane.onRevealFile = { [weak self] url in self?.revealFromPreview(url) }
         table.openSelection = { [weak self] in self?.openSelected(nil) }
         table.goBack = { [weak self] in self?.goBack(nil) }
         installKeyboardNavigation()
@@ -1643,6 +1644,26 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     var previewedURL: URL? { previewPane.previewedURL }
     var previewImageLoaded: Bool { previewPane.previewImageLoaded }
     var previewMessage: String { previewPane.message }
+    var previewPaneController: PreviewPaneController { previewPane }
+
+    /// A link in a previewed Markdown file: a folder is opened in this tab, a file is selected in
+    /// its folder. Nothing is opened in another app or run.
+    private func revealFromPreview(_ url: URL) {
+        Task { [weak self] in
+            // Asked off the main thread: the volume may stop answering.
+            let folder: Bool? = await Task.detached(priority: .userInitiated) {
+                var isDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return nil }
+                return isDirectory.boolValue && !NSWorkspace.shared.isFilePackage(atPath: url.path)
+            }.value
+            guard let self else { return }
+            switch folder {
+            case nil: NSSound.beep()
+            case true?: self.navigate(.visit(url))
+            case false?: self.navigate(.visit(url.deletingLastPathComponent()), revealing: url)
+            }
+        }
+    }
     var previewPaneWidth: CGFloat {
         get { previewPaneVisible ? previewPane.view.frame.width : lastPreviewWidth }
         set {

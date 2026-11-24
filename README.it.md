@@ -53,6 +53,7 @@ Per installare My Explorer, My Notepad e My Paint in una volta sola, usa il [pro
 ### Riquadro di anteprima e visualizzatore multimediale
 
 - Il riquadro di anteprima mostra immagini, video e audio con i controlli di riproduzione, i PDF con lo scorrimento delle pagine e gli altri tipi tramite Visualizzazione rapida (Quick Look).
+- I file Markdown sono mostrati formattati nel riquadro di anteprima (titoli, elenchi ed elenchi di attività, tabelle, codice con evidenziazione della sintassi, note a piè di pagina, immagini della stessa cartella), con un selettore per vedere il testo sorgente. Le immagini remote non vengono scaricate e i link si aprono solo con un clic.
 - Il visualizzatore apre immagini, video e audio in una finestra dedicata, scorre i file della cartella con le frecce e ingrandisce dall’1% all’800%.
 - Le immagini animate (WebP, GIF, APNG) vengono riprodotte.
 - La riproduzione automatica dei video si può disattivare in Opzioni.

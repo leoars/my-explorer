@@ -947,6 +947,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                     NSApp.terminate(nil)
                     return
                 }
+                if arguments.contains("--markdown-smoke") {
+                    try await testMarkdownPreview(root: root, browser: controller)
+                    print("SMOKE PASS: Markdown preview formatted and as source, tables, tasks, code, footnotes, anchors, local image, local link, remote image not fetched, Quick Look for oversize and non-UTF-8")
+                    NSApp.terminate(nil)
+                    return
+                }
                 if arguments.contains("--shortcuts-smoke") {
                     try await testFolderShortcuts(root: root, browser: controller)
                     print("SMOKE PASS: favorite and recent folders in the tree, context menus, Navigate menu with Control+1, stable recent order, options and excluded places")
@@ -4018,6 +4024,181 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         browser.window?.makeFirstResponder(browser.table)
         try await Task.sleep(for: .milliseconds(300))
         guard !browser.addressSuggestions.isVisible else { throw SmokeFailure.failed("Late suggestions after leaving address") }
+    }
+
+    /// Issue #1: a Markdown file is shown formatted in the preview pane, not as its source.
+    private func testMarkdownPreview(root: URL, browser: ExplorerWindowController) async throws {
+        let folder = root.appendingPathComponent("MarkdownPreview", isDirectory: true)
+        try? FileManager.default.removeItem(at: folder)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try FileManager.default.copyItem(at: root.appendingPathComponent("Preview.png"), to: folder.appendingPathComponent("Logo.png"))
+        let guide = """
+        # Guide title
+
+        Text with **bold**, *italic*, ~~strike~~ and `code`, see [Section two](#section-two) and [the other file](Other.md).
+        A note[^n] and <span>inline html</span>.
+
+        - [x] finished task
+        - [ ] open task
+          1. nested step
+
+        > A quote
+
+        | Name | Value |
+        |:-----|------:|
+        | one  | 1     |
+
+        ```swift
+        let answer = 42 // comment
+        ```
+
+        <div>raw block</div>
+
+        ![Local logo](Logo.png) ![Remote picture](https://example.invalid/remote.png)
+
+        ---
+
+        ## Section two
+
+        End.
+
+        [^n]: The footnote text.
+        """
+        try guide.write(to: folder.appendingPathComponent("Guide.md"), atomically: true, encoding: .utf8)
+        try "# Other\n".write(to: folder.appendingPathComponent("Other.md"), atomically: true, encoding: .utf8)
+        try Data(repeating: 0x61, count: MarkdownFile.byteLimit + 10).write(to: folder.appendingPathComponent("Big.md"))
+        try Data([0x23, 0x20, 0x4F, 0x6C, 0xE1, 0x0A]).write(to: folder.appendingPathComponent("Latin.md"))
+        var large = "# Large\n\n"
+        var section = 0
+        while large.utf8.count < MarkdownFile.byteLimit - 4_000 {
+            section += 1
+            large += "## Part \(section)\n\nSome **bold** and *italic* text with `code` and a [link](#large).\n\n- item one\n- item two\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```swift\nlet value = \(section)\n```\n\n"
+        }
+        large += "## Large end\n"
+        try large.write(to: folder.appendingPathComponent("Large.md"), atomically: true, encoding: .utf8)
+
+        let pane = browser.previewPaneController
+        func select(_ name: String) throws {
+            guard let index = (0..<browser.table.numberOfRows).first(where: { browser.tableView(browser.table, typeSelectStringFor: nil, row: $0) == name }) else {
+                throw SmokeFailure.failed("Missing Markdown fixture \(name)")
+            }
+            browser.table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        }
+        browser.navigate(.visit(folder))
+        try await waitForListing(browser)
+        try await waitForCondition("Markdown fixture listing") {
+            browser.session.history.current.url.standardizedFileURL.path == folder.standardizedFileURL.path && browser.table.numberOfRows == 6
+        }
+        if !browser.previewPaneVisible { browser.previewButton.performClick(nil) }
+        try select("Guide.md")
+        try await waitForCondition("formatted Markdown") { pane.markdownText != nil }
+        guard pane.markdownDisplayMode == .formatted, let text = pane.markdownText, !pane.showsQuickLook else { throw SmokeFailure.failed("Markdown not formatted") }
+        for expected in ["Guide title", "bold", "☑", "☐", "finished task", "A quote", "let answer = 42", "<span>inline html</span>", "<div>raw block</div>", "Remote picture", "The footnote text."] {
+            guard text.contains(expected) else { throw SmokeFailure.failed("Formatted Markdown is missing \(expected)") }
+        }
+        for source in ["# Guide", "**bold**", "- [x]", "[^n]:", "```"] {
+            guard !text.contains(source) else { throw SmokeFailure.failed("Formatted Markdown still shows \(source)") }
+        }
+        guard let storage = pane.markdownStorage else { throw SmokeFailure.failed("No Markdown storage") }
+        var cells = 0, highlighted = false
+        storage.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
+            if let style = value as? NSParagraphStyle, style.textBlocks.contains(where: { $0 is NSTextTableBlock }) { cells += 1 }
+        }
+        storage.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
+            if (value as? NSColor) == .systemPink { highlighted = true }
+        }
+        guard cells == 4 else { throw SmokeFailure.failed("Table has \(cells) cells instead of 4") }
+        guard highlighted else { throw SmokeFailure.failed("Swift code not highlighted") }
+        try await waitForCondition("local Markdown image") { pane.markdownImagesSettled }
+        guard pane.markdownImageCount == 1 else { throw SmokeFailure.failed("Local image count \(pane.markdownImageCount), remote must not load") }
+        let arguments = ProcessInfo.processInfo.arguments
+        if let index = arguments.firstIndex(of: "--preview"), arguments.indices.contains(index + 1), let content = browser.window?.contentView {
+            browser.previewPaneWidth = 460
+            try await Task.sleep(for: .milliseconds(400))
+            pane.scrollMarkdown(to: "guide-title")
+            content.layoutSubtreeIfNeeded(); content.displayIfNeeded()
+            if let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+                content.cacheDisplay(in: content.bounds, to: bitmap)
+                let path = URL(fileURLWithPath: arguments[index + 1]).deletingPathExtension().path + "-markdown.png"
+                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+            }
+            // The other appearance while the document stays open: colors follow without a new render.
+            let original = browser.window?.appearance
+            let dark = content.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            browser.window?.appearance = NSAppearance(named: dark ? .aqua : .darkAqua)
+            try await Task.sleep(for: .milliseconds(300))
+            content.displayIfNeeded()
+            if let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+                content.cacheDisplay(in: content.bounds, to: bitmap)
+                let path = URL(fileURLWithPath: arguments[index + 1]).deletingPathExtension().path + "-markdown-switched.png"
+                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+            }
+            browser.window?.appearance = original
+            pane.scrollMarkdown(to: "fn-1")
+            try await Task.sleep(for: .milliseconds(200))
+            content.displayIfNeeded()
+            if let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+                content.cacheDisplay(in: content.bounds, to: bitmap)
+                let path = URL(fileURLWithPath: arguments[index + 1]).deletingPathExtension().path + "-markdown-end.png"
+                try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+            }
+        }
+        guard pane.scrollMarkdown(to: "section-two"), pane.scrollMarkdown(to: "fn-1"), pane.scrollMarkdown(to: "fnref-1"),
+              !pane.scrollMarkdown(to: "missing-anchor") else { throw SmokeFailure.failed("Markdown anchors") }
+        guard case .web = pane.followMarkdownLink(titled: "Remote picture") ?? .refused else {
+            throw SmokeFailure.failed("Remote image is not a link to the web")
+        }
+
+        // Source view, kept while the listing reads the folder again.
+        pane.selectMarkdownMode(.source)
+        guard pane.markdownDisplayMode == .source, pane.markdownText?.contains("**bold**") == true, pane.markdownText?.contains("| one  | 1     |") == true else {
+            throw SmokeFailure.failed("Markdown source view")
+        }
+        browser.navigate(.reload)
+        try await waitForListing(browser)
+        try await Task.sleep(for: .milliseconds(300))
+        guard pane.markdownDisplayMode == .source, pane.previewedURL?.lastPathComponent == "Guide.md" else { throw SmokeFailure.failed("Refresh lost the Markdown source view") }
+        pane.selectMarkdownMode(.formatted)
+        guard pane.markdownText?.contains("**bold**") == false else { throw SmokeFailure.failed("Markdown did not return to formatted") }
+
+        // A link to a file next to it selects that file, whose preview follows.
+        guard case .localFile? = pane.followMarkdownLink(titled: "the other file") else { throw SmokeFailure.failed("Local Markdown link") }
+        try await waitForCondition("linked file selected") { pane.previewedURL?.lastPathComponent == "Other.md" && pane.markdownText?.contains("Other") == true }
+
+        // The context menu keeps no item that would open a link around the view.
+        guard let menuItems = pane.markdownContextMenuActions() else { throw SmokeFailure.failed("No Markdown context menu") }
+        if let opener = menuItems.first(where: { $0.localizedCaseInsensitiveContains("link") && !$0.localizedCaseInsensitiveContains("copy") }) {
+            throw SmokeFailure.failed("Markdown context menu still has \(opener)")
+        }
+
+        // Close to the limit: shown formatted, and laid out to its end on the main thread.
+        let started = ContinuousClock.now
+        try select("Large.md")
+        // The longest the main thread went without answering while the document was read and installed.
+        var longestStall = Duration.zero
+        var last = ContinuousClock.now
+        while !(pane.previewedURL?.lastPathComponent == "Large.md" && pane.markdownText != nil) {
+            guard ContinuousClock.now - started < .seconds(20) else { throw SmokeFailure.failed("Large Markdown not shown") }
+            try await Task.sleep(for: .milliseconds(5))
+            let now = ContinuousClock.now
+            longestStall = max(longestStall, now - last)
+            last = now
+        }
+        let shown = ContinuousClock.now - started
+        let layoutStart = ContinuousClock.now
+        guard pane.scrollMarkdown(to: "large-end") else { throw SmokeFailure.failed("Large Markdown end anchor") }
+        browser.window?.contentView?.displayIfNeeded()
+        let layout = ContinuousClock.now - layoutStart
+        print("MARKDOWN TIMING: 2 MiB document shown in \(shown), longest main-thread stall \(longestStall), laid out to its end in \(layout)")
+
+        // Too large or not UTF-8: Quick Look, as before.
+        for name in ["Big.md", "Latin.md"] {
+            try select(name)
+            try await waitForCondition("Quick Look for \(name)") { pane.previewedURL?.lastPathComponent == name && pane.showsQuickLook && pane.markdownText == nil }
+        }
+        browser.navigate(.visit(root))
+        try await waitForListing(browser)
     }
 
     private func testFolderShortcuts(root: URL, browser: ExplorerWindowController) async throws {

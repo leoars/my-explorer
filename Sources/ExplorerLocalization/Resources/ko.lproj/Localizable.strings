@@ -230,6 +230,12 @@
 "preview.pdf.previous" = "이전 페이지";
 "preview.pdf.next" = "다음 페이지";
 "preview.pdf.page" = "%@ / %@ 페이지";
+"preview.markdown.formatted" = "서식 적용";
+"preview.markdown.source" = "소스";
+"preview.markdown.mode" = "Markdown 보기";
+"preview.markdown.image" = "이미지: %@";
+"preview.markdown.image.untitled" = "이미지";
+"preview.markdown.footnote.back" = "참조 위치로 돌아가기";
 
 "font.increase" = "모든 글꼴 크기 늘리기";
 "font.decrease" = "모든 글꼴 크기 줄이기";

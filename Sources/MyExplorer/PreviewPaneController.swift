@@ -19,6 +19,8 @@ final class PreviewPaneController: NSViewController {
     private let actionsButton = NSPopUpButton(frame: .zero, pullsDown: true)
     private let actionsStack = NSStackView()
     var onExtractText: ((URL) -> Void)?
+    /// A link in a Markdown file to a file or folder on this Mac shows it in the window.
+    var onRevealFile: ((URL) -> Void)?
     private var quickLook: QLPreviewView?
     private let imageView = NSImageView()
     private let playerView = AVPlayerView()
@@ -33,6 +35,10 @@ final class PreviewPaneController: NSViewController {
     private var pdfBar: NSStackView?
     private var pdfPageLabel: NSTextField?
     private var pdfPageObserver: NSObjectProtocol?
+    private var markdownView: MarkdownPreviewView?
+    private let markdownMode = NSSegmentedControl()
+    /// Formatted or source: the choice carries over to the next Markdown file while the app runs.
+    private static var markdownPreference: MarkdownPreviewView.Mode = .formatted
     /// The item whose download this pane is waiting for.
     private var downloading: URL?
     /// Selecting is not opening: above this size a video or sound that is only in iCloud is not downloaded
@@ -78,6 +84,17 @@ final class PreviewPaneController: NSViewController {
         actionsStack.alignment = .leading
         actionsStack.spacing = 4
         actionsStack.setContentHuggingPriority(.required, for: .vertical)
+        markdownMode.segmentCount = 2
+        markdownMode.setLabel(L10n.text("preview.markdown.formatted"), forSegment: 0)
+        markdownMode.setLabel(L10n.text("preview.markdown.source"), forSegment: 1)
+        markdownMode.trackingMode = .selectOne
+        markdownMode.font = ExplorerStyle.font(.bars)
+        markdownMode.target = self
+        markdownMode.action = #selector(changeMarkdownMode)
+        markdownMode.setAccessibilityLabel(L10n.text("preview.markdown.mode"))
+        markdownMode.setAccessibilityIdentifier("explorer.preview.markdown.mode")
+        markdownMode.isHidden = true
+        actionsStack.addArrangedSubview(markdownMode)
         actionsStack.addArrangedSubview(ocrButton)
         actionsStack.addArrangedSubview(actionsButton)
         actionsButton.font = ExplorerStyle.font(.bars)
@@ -162,7 +179,7 @@ final class PreviewPaneController: NSViewController {
         // state changes, the file does not): neither may stop the wait or rebuild what is shown.
         let sameFile = previewedURL == entry.url && displayedEntry.map {
             $0.url == entry.url && $0.size == entry.size && $0.modified == entry.modified && $0.isAlias == entry.isAlias } == true
-        let showing = !imageView.isHidden || !playerView.isHidden || quickLook != nil || pdfView != nil
+        let showing = !imageView.isHidden || !playerView.isHidden || quickLook != nil || pdfView != nil || markdownView != nil
         if sameFile, downloading == entry.url || showing { displayedEntry = entry; return }
         guard displayedEntry != entry || previewedURL != entry.url else { return }
         closePreview()
@@ -185,7 +202,7 @@ final class PreviewPaneController: NSViewController {
             do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
             guard !Task.isCancelled else { return }
             let worker = Task.detached(priority: .userInitiated) {
-                await loader.prepare(entry, image: isImage, maximumEdge: pixelEdge)
+                PreviewImageLoader.markdown(await loader.prepare(entry, image: isImage, maximumEdge: pixelEdge), entry: entry)
             }
             let prepared = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
             guard !Task.isCancelled, let self, self.generation == expectedGeneration,
@@ -198,6 +215,8 @@ final class PreviewPaneController: NSViewController {
                 self.imageView.isHidden = false
                 self.placeholder.isHidden = true
                 self.animateIfAnimated(entry.url, generation: expectedGeneration)
+            case .markdown(let url, let payload):
+                self.installMarkdown(url, payload, entryURL: entry.url)
             case .quickLook(let url):
                 if kind == .video || kind == .audio { self.installVideo(url) }
                 else if UTType(filenameExtension: url.pathExtension)?.conforms(to: .pdf) == true { self.installPDF(url) }
@@ -330,6 +349,70 @@ final class PreviewPaneController: NSViewController {
         session?.retireAfterDetachingUI()
     }
 
+    private struct RenderedMarkdown: @unchecked Sendable { let text: NSAttributedString }
+
+    /// A Markdown file is shown formatted in the pane, with a switch to its source. It was read and
+    /// parsed with the rest of the preparation; laying it out happens off the main thread too.
+    private func installMarkdown(_ url: URL, _ payload: MarkdownPayload, entryURL: URL) {
+        let expectedGeneration = generation
+        placeholder.stringValue = L10n.text("status.loading")
+        placeholder.isHidden = false
+        let style = MarkdownRenderStyle(baseSize: CGFloat(ExplorerStyle.preferences.fontSize(for: .files)),
+                                        imageFormat: L10n.text("preview.markdown.image"),
+                                        untitledImage: L10n.text("preview.markdown.image.untitled"),
+                                        footnoteBack: L10n.text("preview.markdown.footnote.back"))
+        loadTask = Task { [weak self] in
+            let worker = Task.detached(priority: .userInitiated) {
+                RenderedMarkdown(text: MarkdownRenderer.render(payload.document, documentURL: url, style: style))
+            }
+            let rendered = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+            guard !Task.isCancelled, let self, self.generation == expectedGeneration, self.previewedURL == entryURL else { return }
+            self.loadTask = nil
+            let view = MarkdownPreviewView(formatted: rendered.text, source: payload.source, style: style, mode: Self.markdownPreference,
+                                           width: self.previewContainer.bounds.width)
+            view.translatesAutoresizingMaskIntoConstraints = false
+            view.onRevealFile = { [weak self] target in self?.onRevealFile?(target) }
+            self.previewContainer.addSubview(view)
+            NSLayoutConstraint.activate([
+                view.leadingAnchor.constraint(equalTo: self.previewContainer.leadingAnchor),
+                view.trailingAnchor.constraint(equalTo: self.previewContainer.trailingAnchor),
+                view.topAnchor.constraint(equalTo: self.previewContainer.topAnchor),
+                view.bottomAnchor.constraint(equalTo: self.previewContainer.bottomAnchor)
+            ])
+            self.markdownView = view
+            self.markdownMode.selectedSegment = view.mode.rawValue
+            self.markdownMode.isHidden = false
+            self.placeholder.isHidden = true
+        }
+    }
+
+    @objc private func changeMarkdownMode(_ sender: NSSegmentedControl) {
+        guard let mode = MarkdownPreviewView.Mode(rawValue: sender.selectedSegment) else { return }
+        Self.markdownPreference = mode
+        markdownView?.setMode(mode)
+    }
+
+    var markdownText: String? { markdownView?.displayedText }
+    var markdownDisplayMode: MarkdownPreviewView.Mode? { markdownView?.mode }
+    var markdownImageCount: Int { markdownView?.loadedImageCount ?? 0 }
+    var markdownImagesSettled: Bool { markdownView?.imagesSettled ?? false }
+    var markdownStorage: NSTextStorage? { markdownView?.formattedStorage }
+    var showsQuickLook: Bool { quickLook != nil }
+    /// The actions of the shown document's context menu, as a right-click builds it.
+    func markdownContextMenuActions() -> [String]? { markdownView?.contextMenuActions() }
+    func selectMarkdownMode(_ mode: MarkdownPreviewView.Mode) {
+        markdownMode.selectedSegment = mode.rawValue
+        changeMarkdownMode(markdownMode)
+    }
+    @discardableResult func scrollMarkdown(to anchor: String) -> Bool { markdownView?.scroll(to: anchor) ?? false }
+    /// Follows a link of the shown Markdown file as a click does; nil when there is no such link.
+    func followMarkdownLink(titled text: String) -> MarkdownLinkTarget? {
+        guard let view = markdownView, let link = view.link(titled: text) else { return nil }
+        if case .web = link.target { return link.target }
+        view.activate(link)
+        return link.target
+    }
+
     private struct PDFBox: @unchecked Sendable { let document: PDFDocument? }
 
     /// A PDF is read in the pane itself: it scrolls from page to page, and a bar under it steps
@@ -416,6 +499,8 @@ final class PreviewPaneController: NSViewController {
     func closePreview() {
         animation?.stop(); animation = nil
         closePDF()
+        markdownView?.tearDown(); markdownView = nil
+        markdownMode.isHidden = true
         detachPlayback()
         downloading = nil
         actionsButton.menu = nil

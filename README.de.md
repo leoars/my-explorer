@@ -53,6 +53,7 @@ Um My Explorer, My Notepad und My Paint auf einmal zu installieren, nutze das [I
 ### Vorschaubereich und Medienbetrachter
 
 - Der Vorschaubereich zeigt Bilder, Video und Audio mit Wiedergabesteuerung, PDFs zum Blättern und alle übrigen Typen über die Übersicht (Quick Look).
+- Markdown-Dateien erscheinen im Vorschaubereich formatiert (Überschriften, Listen und Aufgabenlisten, Tabellen, Code mit Syntaxhervorhebung, Fußnoten, Bilder aus demselben Ordner), mit einem Schalter für den Quelltext. Bilder aus dem Netz werden nicht geladen, und Links öffnen sich nur per Klick.
 - Der Betrachter öffnet Bilder, Videos und Audiodateien in einem eigenen Fenster, wechselt mit den Pfeiltasten durch die Dateien des Ordners und zoomt von 1 % bis 800 %.
 - Animierte Bilder (WebP, GIF, APNG) werden abgespielt.
 - Die automatische Wiedergabe von Videos lässt sich in den Optionen ausschalten.

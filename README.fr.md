@@ -53,6 +53,7 @@ Pour installer My Explorer, My Notepad et My Paint en une seule fois, utilisez l
 ### Volet d’aperçu et visionneuse multimédia
 
 - Le volet d’aperçu affiche les images, la vidéo et l’audio avec des commandes de lecture, les PDF avec le défilement des pages et les autres types grâce à Coup d’œil (Quick Look).
+- Les fichiers Markdown s’affichent mis en forme dans le volet d’aperçu (titres, listes et listes de tâches, tableaux, code avec coloration syntaxique, notes de bas de page, images du même dossier), avec un bouton pour voir le texte source. Les images distantes ne sont pas téléchargées et les liens ne s’ouvrent que d’un clic.
 - La visionneuse ouvre les images, les vidéos et les fichiers audio dans une fenêtre à part, passe d’un fichier du dossier à l’autre avec les flèches et zoome de 1 % à 800 %.
 - Les images animées (WebP, GIF, APNG) sont lues.
 - La lecture automatique des vidéos peut être désactivée dans Options.

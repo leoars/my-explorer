@@ -53,6 +53,7 @@ Para instalar My Explorer, My Notepad y My Paint de una vez, usa el [instalador 
 ### Panel de vista previa y visor multimedia
 
 - El panel de vista previa muestra imágenes, vídeo y audio con controles de reproducción, PDF con paso de páginas y los demás tipos mediante Vista Rápida (Quick Look).
+- Los archivos Markdown se muestran con formato en el panel de vista previa (títulos, listas y listas de tareas, tablas, código con resaltado de sintaxis, notas al pie, imágenes de la misma carpeta), con un selector para ver el texto original. Las imágenes remotas no se descargan y los enlaces solo se abren con un clic.
 - El visor abre imágenes, vídeos y audio en una ventana propia, avanza por los archivos de la carpeta con las flechas y permite un zoom del 1 % al 800 %.
 - Las imágenes animadas (WebP, GIF, APNG) se reproducen.
 - La reproducción automática de vídeos se puede desactivar en Opciones.

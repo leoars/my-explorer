@@ -53,6 +53,7 @@ Para instalar o My Explorer, o My Notepad e o My Paint de uma vez, use o [instal
 ### Painel de visualização e visualizador de mídia
 
 - O painel de visualização mostra imagens, vídeo e áudio com controles de reprodução, PDF com passagem de páginas e os demais tipos pelo Quick Look.
+- Arquivos Markdown aparecem formatados no painel de visualização (títulos, listas e listas de tarefas, tabelas, código com realce de sintaxe, notas de rodapé, imagens da mesma pasta), com um botão para ver o texto original. Imagens remotas não são baixadas, e os links só abrem com um clique.
 - O visualizador abre imagens, vídeos e áudios em janela própria, avança pelos arquivos da pasta com as setas e dá zoom de 1% a 800%.
 - Imagens animadas (WebP, GIF, APNG) são reproduzidas.
 - A reprodução automática de vídeos pode ser desligada em Opções.

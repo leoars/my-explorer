@@ -6,9 +6,17 @@ import Testing
 private struct FixtureTrash: StorageTrash {
     let folder: URL
     let refuse: String?
+    /// Local items go to the Trash in parallel, and after a failure nothing new starts. The refusal
+    /// waits until this item has gone, so the test does not depend on which one runs first.
+    var refuseAfter: URL?
     func trash(_ source: URL) async throws { _ = try await trashReturningURL(source) }
     func trashReturningURL(_ source: URL) async throws -> URL? {
-        if source.lastPathComponent == refuse { throw CocoaError(.fileWriteNoPermission) }
+        if source.lastPathComponent == refuse {
+            if let refuseAfter {
+                for _ in 0..<400 where FileManager.default.fileExists(atPath: refuseAfter.path) { try await Task.sleep(for: .milliseconds(5)) }
+            }
+            throw CocoaError(.fileWriteNoPermission)
+        }
         let result = folder.appendingPathComponent(UUID().uuidString)
         try FileManager.default.moveItem(at: source, to: result)
         return result
@@ -24,9 +32,9 @@ struct TrashUndoTests {
         try await body(root, trash, LocalTransferService())
     }
 
-    private func remove(_ files: [URL], trash: URL, journal: LocalTransferService, refuse: String? = nil) async throws {
+    private func remove(_ files: [URL], trash: URL, journal: LocalTransferService, refuse: String? = nil, refuseAfter: URL? = nil) async throws {
         let service = StorageDeletionService(clientFactory: { _ in throw CancellationError() },
-                                             trash: FixtureTrash(folder: trash, refuse: refuse))
+                                             trash: FixtureTrash(folder: trash, refuse: refuse, refuseAfter: refuseAfter))
         let plan = try await service.plan(sources: files, recursive: true)
         _ = try await service.execute(planID: plan.id, undoHistory: journal) { _ in true }
     }
@@ -60,7 +68,7 @@ struct TrashUndoTests {
             try Data([5]).write(to: rejected)
             let copies = try await journal.transfer(sources: [source], to: dest, move: false, resolveConflict: { _ in .cancel })
             let copy = try #require(copies.first)
-            do { try await remove([copy, rejected], trash: trash, journal: journal, refuse: "two"); Issue.record("Expected failure") }
+            do { try await remove([copy, rejected], trash: trash, journal: journal, refuse: "two", refuseAfter: copy); Issue.record("Expected failure") }
             catch let failure as StorageDeletionFailure { #expect(failure.completed.map(\.path) == [copy.path]) }
             #expect(await journal.undoKind == .trash)
             _ = try await journal.undo()
