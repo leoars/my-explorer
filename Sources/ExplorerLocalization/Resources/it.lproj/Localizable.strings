@@ -447,6 +447,8 @@
 "updates.idle" = "Controlla GitHub all’avvio e chiede conferma prima del download.";
 "updates.offer" = "Aggiornare My Explorer alla versione %@?";
 "updates.explanation" = "My Explorer scaricherà e installerà l’aggiornamento, quindi si riaprirà.";
+"updates.version_build" = "%1$@ (build %2$@)";
+"updates.installed" = "Hai la versione %@.";
 "updates.install" = "Aggiorna ora";
 "updates.later" = "Ricordamelo tra 7 giorni";
 "updates.skip" = "Salta questa versione";

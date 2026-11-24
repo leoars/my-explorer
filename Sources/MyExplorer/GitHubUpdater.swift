@@ -79,8 +79,9 @@ final class GitHubUpdater {
                     return
                 }
                 let alert = NSAlert()
-                alert.messageText = L10n.format("updates.offer", String(candidate.build))
-                alert.informativeText = L10n.text("updates.explanation")
+                alert.messageText = L10n.format("updates.offer", Self.label(version: candidate.version, build: candidate.build))
+                alert.informativeText = L10n.text("updates.explanation") + "\n\n"
+                    + L10n.format("updates.installed", Self.label(version: Self.installedVersion(app), build: try UpdateInstaller.build(app)))
                 alert.addButton(withTitle: L10n.text("updates.install"))
                 if manualWindow != nil {
                     alert.addButton(withTitle: L10n.text("dialog.cancel")).keyEquivalent = "\u{1b}"
@@ -100,7 +101,7 @@ final class GitHubUpdater {
                     preferences.skip(build: candidate.build)
                     status = "updates.skipped"
                 case .alertFirstButtonReturn:
-                    let panel = UpdateProgressController(version: candidate.build, totalBytes: candidate.asset.size)
+                    let panel = UpdateProgressController(version: Self.label(version: candidate.version, build: candidate.build), totalBytes: candidate.asset.size)
                     progress = panel
                     status = "updates.downloading"
                     panel.showWindow(nil)
@@ -170,11 +171,22 @@ final class GitHubUpdater {
         guard code == 200 else { throw UpdateError.invalid }
     }
 
-    private typealias Candidate = (build: Int, asset: GitHubUpdateRelease.Asset)
+    private typealias Candidate = (build: Int, asset: GitHubUpdateRelease.Asset, version: String?)
+
+    /// "1.0.2 (build 66)": the version people know, with the build the updater compares. A release
+    /// whose tag is not a version shows the build alone.
+    static func label(version: String?, build: Int) -> String {
+        guard let version else { return String(build) }
+        return L10n.format("updates.version_build", version, String(build))
+    }
+
+    static func installedVersion(_ app: URL) -> String? {
+        Bundle(url: app)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+    }
 
     private func newest(after minimumBuild: Int) async throws -> Candidate? {
         let current = max(try UpdateInstaller.build(app), minimumBuild)
-        var best: (build: Int, asset: GitHubUpdateRelease.Asset)?
+        var best: Candidate?
         var page = 1
         while true {
             let url = URL(string: api + "?per_page=100&page=\(page)")!

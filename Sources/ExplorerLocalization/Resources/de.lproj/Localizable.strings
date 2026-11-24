@@ -447,6 +447,8 @@
 "updates.idle" = "Prüft GitHub beim Start und fragt vor dem Download nach.";
 "updates.offer" = "My Explorer auf Version %@ aktualisieren?";
 "updates.explanation" = "My Explorer lädt das Update herunter, installiert es und startet neu.";
+"updates.version_build" = "%1$@ (Build %2$@)";
+"updates.installed" = "Installiert ist Version %@.";
 "updates.install" = "Jetzt aktualisieren";
 "updates.later" = "In 7 Tagen erinnern";
 "updates.skip" = "Diese Version überspringen";

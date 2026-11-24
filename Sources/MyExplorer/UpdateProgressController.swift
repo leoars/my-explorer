@@ -8,11 +8,11 @@ final class UpdateProgressController: DialogWindowController {
     private let bar = NSProgressIndicator()
     private let totalBytes: Int64
 
-    init(version: Int, totalBytes: Int) {
+    init(version: String, totalBytes: Int) {
         self.totalBytes = Int64(totalBytes)
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 112),
                             styleMask: [.titled, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.title = L10n.format("updates.progress_title", String(version))
+        panel.title = L10n.format("updates.progress_title", version)
         panel.isFloatingPanel = true
         panel.isReleasedWhenClosed = false
         super.init(window: panel)

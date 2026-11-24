@@ -447,6 +447,8 @@
 "updates.idle" = "起動時に GitHub を確認し、ダウンロード前に確認します。";
 "updates.offer" = "My Explorer をバージョン %@ にアップデートしますか？";
 "updates.explanation" = "アップデートをダウンロードしてインストールし、My Explorer を再起動します。";
+"updates.version_build" = "%1$@（ビルド %2$@）";
+"updates.installed" = "現在のバージョンは %@ です。";
 "updates.install" = "今すぐアップデート";
 "updates.later" = "7日後に通知";
 "updates.skip" = "このバージョンをスキップ";

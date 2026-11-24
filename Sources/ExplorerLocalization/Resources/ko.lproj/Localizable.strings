@@ -445,8 +445,10 @@
 "updates.failed" = "업데이트에 실패했습니다. 지금 확인을 선택하여 다시 시도하세요.";
 "updates.option" = "시작할 때 업데이트 확인";
 "updates.idle" = "시작할 때 GitHub를 확인하고 다운로드 전에 묻습니다.";
-"updates.offer" = "My Explorer를 버전 %@로 업데이트할까요?";
+"updates.offer" = "My Explorer를 업데이트할까요? 새 버전: %@";
 "updates.explanation" = "업데이트를 다운로드하여 설치하고 My Explorer를 다시 엽니다.";
+"updates.version_build" = "%1$@ (빌드 %2$@)";
+"updates.installed" = "현재 버전: %@";
 "updates.install" = "지금 업데이트";
 "updates.later" = "7일 후에 알림";
 "updates.skip" = "이 버전 건너뛰기";
@@ -454,7 +456,7 @@
 "updates.skipped" = "이 버전을 건너뛰었습니다.";
 "updates.downloading" = "업데이트 다운로드 중…";
 "updates.check_now" = "지금 확인";
-"updates.progress_title" = "My Explorer를 버전 %@로 업데이트 중";
+"updates.progress_title" = "My Explorer 업데이트 중: 버전 %@";
 "updates.verifying" = "업데이트 확인 및 준비 중…";
 "updates.waiting" = "파일 작업이 끝나기를 기다리는 중…";
 "updates.installing" = "업데이트 설치 중…";
