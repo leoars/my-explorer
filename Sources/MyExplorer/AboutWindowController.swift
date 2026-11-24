@@ -61,7 +61,8 @@ final class AboutWindowController: DialogWindowController {
         header.alignment = .top
         header.spacing = 20
         let suite = NSStackView(views: [text(L10n.text("about.suite")), link("My Notepad", github + "/My-Notepad"), text("·"),
-                                        link("My Paint", github + "/my-paint")])
+                                        link("My Paint", github + "/my-paint"), text("·"),
+                                        link("My Calc", github + "/my-calc")])
         let legalLinks = NSStackView(views: [link(L10n.text("about.license"), "LICENSE"), text("·"),
                                              link(L10n.text("about.notices"), "THIRD_PARTY_NOTICES.md")])
         let repository = github + "/my-explorer"
