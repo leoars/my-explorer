@@ -2,7 +2,7 @@
 
 [English](README.md) · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Italiano](README.it.md)
 
-**My スイート:** **My Explorer** · [My Notepad](https://github.com/leoars/My-Notepad/blob/main/docs/readme/ja.md) · [My Paint](https://github.com/leoars/my-paint/blob/main/docs/readme/ja.md)
+**My スイート:** **My Explorer** · [My Notepad](https://github.com/leoars/My-Notepad/blob/main/docs/readme/ja.md) · [My Paint](https://github.com/leoars/my-paint/blob/main/docs/readme/ja.md) · [My Calc](https://github.com/leoars/my-calc/blob/main/docs/readme/ja.md)
 
 My Explorer は macOS 用のネイティブファイルマネージャーです。フォルダツリー、タブ、コマンドバー、複数の表示モードを、Mac のゴミ箱、ボリューム、iCloud、アプリと組み合わせて使えます。
 
@@ -14,7 +14,7 @@ DMG を開き、**My Explorer** を「**アプリケーション**」にコピ�
 
 macOS 14 以降が必要で、Apple Silicon と Intel のどちらにも対応しています。以前のバージョンからアップデートする場合、プライバシーのアクセス許可と、アプリがキーチェーンに保存したパスワードへのアクセスを、macOS があらためて求めることがあります。
 
-My Explorer、My Notepad、My Paint をまとめてインストールするには、[My スイートのインストーラ](https://github.com/leoars/my-suite/blob/main/docs/readme/en.md)を使ってください。
+My Explorer、My Notepad、My Paint、My Calc をまとめてインストールするには、[My スイートのインストーラ](https://github.com/leoars/my-suite/blob/main/docs/readme/ja.md)を使ってください。
 
 ## 機能
 
@@ -126,11 +126,13 @@ Ctrl を使うショートカットは、テキストフィールドの中も含
 
 ## My スイートの一部
 
-My Explorer は My スイートの一部です。My スイートは、おなじみのメニューとショートカットを備えた、シンプルでわかりやすい macOS 用の 3 つのアプリです。
+My Explorer は My スイートの一部です。My スイートは、おなじみのメニューとショートカットを備えた、シンプルでわかりやすい macOS 用の 4 つのアプリです。
 
 - **My Explorer**（このリポジトリ）：ファイルマネージャー。
 - **[My Notepad](https://github.com/leoars/My-Notepad/blob/main/docs/readme/ja.md)**：シンプルなテキストエディタ。インストールしておくと、.txt ファイルをダブルクリックしたときにテキストが My Notepad で開き、コンテキストメニューに **My Notepad で編集** が加わります。
 - **[My Paint](https://github.com/leoars/my-paint/blob/main/docs/readme/ja.md)**：シンプルな画像エディタ。インストールしておくと、画像のコンテキストメニューに **My Paint で編集** が加わります。
+- **[My Calc](https://github.com/leoars/my-calc/blob/main/docs/readme/ja.md)**：シンプルな計算機。
+- **[My Suite](https://github.com/leoars/my-suite/blob/main/docs/readme/ja.md)**：4 つのアプリをまとめたインストーラ。インストールするアプリを選べます。
 
 ## ソースコードからインストール
 

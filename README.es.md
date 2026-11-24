@@ -2,7 +2,7 @@
 
 [English](README.md) · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Italiano](README.it.md)
 
-**Suite My:** **My Explorer** · [My Notepad](https://github.com/leoars/My-Notepad/blob/main/docs/readme/es.md) · [My Paint](https://github.com/leoars/my-paint/blob/main/docs/readme/es.md)
+**Suite My:** **My Explorer** · [My Notepad](https://github.com/leoars/My-Notepad/blob/main/docs/readme/es.md) · [My Paint](https://github.com/leoars/my-paint/blob/main/docs/readme/es.md) · [My Calc](https://github.com/leoars/my-calc/blob/main/docs/readme/es.md)
 
 My Explorer es un gestor de archivos nativo para macOS. Reúne árbol de carpetas, pestañas, barra de comandos y varias vistas con la Papelera, los volúmenes, iCloud y las aplicaciones del Mac.
 
@@ -14,7 +14,7 @@ Abre el DMG, copia **My Explorer** en **Aplicaciones**, expulsa la imagen de dis
 
 Requiere macOS 14 o posterior, en Apple Silicon o Intel. Si actualizas desde una versión anterior, macOS puede volver a pedir los permisos de privacidad y el acceso a las contraseñas que la aplicación guardó en Llaveros.
 
-Para instalar My Explorer, My Notepad y My Paint de una vez, usa el [instalador de la suite My](https://github.com/leoars/my-suite/blob/main/docs/readme/en.md).
+Para instalar My Explorer, My Notepad, My Paint y My Calc de una vez, usa el [instalador de la suite My](https://github.com/leoars/my-suite/blob/main/docs/readme/es.md).
 
 ## Funciones
 
@@ -126,11 +126,13 @@ Los atajos con Ctrl funcionan como ya los conoces, también en los campos de tex
 
 ## Parte de la suite My
 
-My Explorer forma parte de la suite My: tres aplicaciones para macOS sencillas y directas, con los menús y los atajos de siempre.
+My Explorer forma parte de la suite My: cuatro aplicaciones para macOS sencillas y directas, con los menús y los atajos de siempre.
 
 - **My Explorer** (este repositorio): gestor de archivos.
 - **[My Notepad](https://github.com/leoars/My-Notepad/blob/main/docs/readme/es.md)**: editor de texto sencillo. Con él instalado, el doble clic en un archivo .txt abre el texto en My Notepad, y el menú contextual incorpora **Editar con My Notepad**.
 - **[My Paint](https://github.com/leoars/my-paint/blob/main/docs/readme/es.md)**: editor de imágenes sencillo. Con él instalado, el menú contextual de las imágenes incorpora **Editar con My Paint**.
+- **[My Calc](https://github.com/leoars/my-calc/blob/main/docs/readme/es.md)**: calculadora sencilla.
+- **[My Suite](https://github.com/leoars/my-suite/blob/main/docs/readme/es.md)**: el instalador que reúne las cuatro aplicaciones, con la opción de elegir cuáles instalar.
 
 ## Instalar desde el código fuente
 

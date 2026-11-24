@@ -2,7 +2,7 @@
 
 [English](README.md) · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Italiano](README.it.md)
 
-**My suite:** **My Explorer** · [My Notepad](https://github.com/leoars/My-Notepad/blob/main/docs/readme/en.md) · [My Paint](https://github.com/leoars/my-paint/blob/main/docs/readme/en.md)
+**My suite:** **My Explorer** · [My Notepad](https://github.com/leoars/My-Notepad/blob/main/docs/readme/en.md) · [My Paint](https://github.com/leoars/my-paint/blob/main/docs/readme/en.md) · [My Calc](https://github.com/leoars/my-calc/blob/main/docs/readme/en.md)
 
 My Explorer is a native file manager for macOS. It brings together a folder tree, tabs, a command bar and several view modes with the Trash, volumes, iCloud and the Mac's applications.
 
@@ -14,7 +14,7 @@ Open the DMG, copy **My Explorer** to **Applications**, eject the disk image and
 
 Requires macOS 14 or later, on Apple Silicon or Intel. If you are updating from an earlier version, macOS may ask again for privacy permissions and for access to the passwords the app saved in Keychain.
 
-To install My Explorer, My Notepad and My Paint in one go, use the [My suite installer](https://github.com/leoars/my-suite/blob/main/docs/readme/en.md).
+To install My Explorer, My Notepad, My Paint and My Calc in one go, use the [My suite installer](https://github.com/leoars/my-suite/blob/main/docs/readme/en.md).
 
 ## Features
 
@@ -126,11 +126,13 @@ The Ctrl shortcuts work the way you already know, including in text fields; so d
 
 ## Part of the My suite
 
-My Explorer is part of the My suite: three simple, straightforward applications for macOS, with the menus and shortcuts you already know.
+My Explorer is part of the My suite: four simple, straightforward applications for macOS, with the menus and shortcuts you already know.
 
 - **My Explorer** (this repository): file manager.
 - **[My Notepad](https://github.com/leoars/My-Notepad/blob/main/docs/readme/en.md)**: a simple text editor. With it installed, double-clicking a .txt file opens the text in My Notepad, and the context menu gains **Edit with My Notepad**.
 - **[My Paint](https://github.com/leoars/my-paint/blob/main/docs/readme/en.md)**: a simple image editor. With it installed, the context menu for images gains **Edit with My Paint**.
+- **[My Calc](https://github.com/leoars/my-calc/blob/main/docs/readme/en.md)**: a simple calculator.
+- **[My Suite](https://github.com/leoars/my-suite/blob/main/docs/readme/en.md)**: the installer that brings the four apps together, letting you choose which ones to install.
 
 ## Install from source
 

@@ -2,7 +2,7 @@
 
 [English](README.md) · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Italiano](README.it.md)
 
-**Suíte My:** **My Explorer** · [My Notepad](https://github.com/leoars/My-Notepad) · [My Paint](https://github.com/leoars/my-paint)
+**Suíte My:** **My Explorer** · [My Notepad](https://github.com/leoars/My-Notepad) · [My Paint](https://github.com/leoars/my-paint) · [My Calc](https://github.com/leoars/my-calc)
 
 My Explorer é um gerenciador de arquivos nativo para macOS. Ele reúne árvore de pastas, abas, barra de comandos e várias visualizações com a Lixeira, os volumes, o iCloud e os aplicativos do Mac.
 
@@ -14,7 +14,7 @@ Abra o DMG, copie **My Explorer** para **Aplicativos**, ejete a imagem de disco 
 
 Requer macOS 14 ou posterior, em Apple Silicon ou Intel. Se você está atualizando de uma versão anterior, o macOS pode pedir de novo as permissões de privacidade e o acesso às senhas que o aplicativo guardou nas Chaves.
 
-Para instalar o My Explorer, o My Notepad e o My Paint de uma vez, use o [instalador da suíte My](https://github.com/leoars/my-suite).
+Para instalar o My Explorer, o My Notepad, o My Paint e o My Calc de uma vez, use o [instalador da suíte My](https://github.com/leoars/my-suite).
 
 ## Funcionalidades
 
@@ -126,11 +126,13 @@ Os atalhos com Ctrl funcionam como você já conhece, inclusive nos campos de te
 
 ## Parte da suíte My
 
-O My Explorer faz parte da suíte My: três aplicativos para macOS simples e diretos, com os menus e os atalhos de sempre.
+O My Explorer faz parte da suíte My: quatro aplicativos para macOS simples e diretos, com os menus e os atalhos de sempre.
 
 - **My Explorer** (este repositório): gerenciador de arquivos.
 - **[My Notepad](https://github.com/leoars/My-Notepad)**: editor de texto simples. Com ele instalado, o duplo clique em um arquivo .txt abre o texto no My Notepad, e o menu de contexto ganha **Editar com o My Notepad**.
 - **[My Paint](https://github.com/leoars/my-paint)**: editor de imagens simples. Com ele instalado, o menu de contexto das imagens ganha **Editar com o My Paint**.
+- **[My Calc](https://github.com/leoars/my-calc)**: calculadora simples.
+- **[My Suite](https://github.com/leoars/my-suite)**: o instalador que reúne os quatro aplicativos, com a escolha de quais instalar.
 
 ## Instalar a partir do código-fonte
 

@@ -2,7 +2,7 @@
 
 [English](README.md) · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Italiano](README.it.md)
 
-**My 스위트:** **My Explorer** · [My Notepad](https://github.com/leoars/My-Notepad/blob/main/docs/readme/ko.md) · [My Paint](https://github.com/leoars/my-paint/blob/main/docs/readme/ko.md)
+**My 스위트:** **My Explorer** · [My Notepad](https://github.com/leoars/My-Notepad/blob/main/docs/readme/ko.md) · [My Paint](https://github.com/leoars/my-paint/blob/main/docs/readme/ko.md) · [My Calc](https://github.com/leoars/my-calc/blob/main/docs/readme/ko.md)
 
 My Explorer는 macOS용 네이티브 파일 관리자입니다. 폴더 트리, 탭, 명령 모음, 여러 보기 방식을 Mac의 휴지통, 볼륨, iCloud, 앱과 함께 사용할 수 있습니다.
 
@@ -14,7 +14,7 @@ DMG를 열고 **My Explorer**를 **응용 프로그램** 폴더에 복사하세�
 
 macOS 14 이상이 필요하며, Apple Silicon과 Intel을 모두 지원합니다. 이전 버전에서 업데이트하는 경우, macOS가 개인정보 보호 권한과 앱이 키체인에 저장한 암호에 대한 접근을 다시 요청할 수 있습니다.
 
-My Explorer, My Notepad, My Paint를 한 번에 설치하려면 [My 스위트 설치 프로그램](https://github.com/leoars/my-suite/blob/main/docs/readme/en.md)을 사용하세요.
+My Explorer, My Notepad, My Paint, My Calc를 한 번에 설치하려면 [My 스위트 설치 프로그램](https://github.com/leoars/my-suite/blob/main/docs/readme/ko.md)을 사용하세요.
 
 ## 기능
 
@@ -126,11 +126,13 @@ Ctrl 단축키는 텍스트 필드를 포함해 이미 익숙한 방식 그대�
 
 ## My 제품군의 일부
 
-My Explorer는 My 제품군에 속합니다. My 제품군은 익숙한 메뉴와 단축키를 갖춘, 단순하고 간결한 macOS용 앱 세 가지입니다.
+My Explorer는 My 제품군에 속합니다. My 제품군은 익숙한 메뉴와 단축키를 갖춘, 단순하고 간결한 macOS용 앱 네 가지입니다.
 
 - **My Explorer**(이 저장소): 파일 관리자.
 - **[My Notepad](https://github.com/leoars/My-Notepad/blob/main/docs/readme/ko.md)**: 간단한 텍스트 편집기. 설치되어 있으면 .txt 파일을 두 번 클릭할 때 텍스트가 My Notepad에서 열리고, 컨텍스트 메뉴에 **My Notepad로 편집**이 추가됩니다.
 - **[My Paint](https://github.com/leoars/my-paint/blob/main/docs/readme/ko.md)**: 간단한 이미지 편집기. 설치되어 있으면 이미지의 컨텍스트 메뉴에 **My Paint로 편집**이 추가됩니다.
+- **[My Calc](https://github.com/leoars/my-calc/blob/main/docs/readme/ko.md)**: 간단한 계산기.
+- **[My Suite](https://github.com/leoars/my-suite/blob/main/docs/readme/ko.md)**: 네 앱을 한데 모은 설치 프로그램으로, 설치할 앱을 고를 수 있습니다.
 
 ## 소스 코드에서 설치
 

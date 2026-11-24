@@ -2,7 +2,7 @@
 
 [English](README.md) · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Italiano](README.it.md)
 
-**Suite My:** **My Explorer** · [My Notepad](https://github.com/leoars/My-Notepad/blob/main/docs/readme/fr.md) · [My Paint](https://github.com/leoars/my-paint/blob/main/docs/readme/fr.md)
+**Suite My:** **My Explorer** · [My Notepad](https://github.com/leoars/My-Notepad/blob/main/docs/readme/fr.md) · [My Paint](https://github.com/leoars/my-paint/blob/main/docs/readme/fr.md) · [My Calc](https://github.com/leoars/my-calc/blob/main/docs/readme/fr.md)
 
 My Explorer est un gestionnaire de fichiers natif pour macOS. Il réunit une arborescence de dossiers, des onglets, une barre de commandes et plusieurs modes d’affichage avec la Corbeille, les volumes, iCloud et les applications du Mac.
 
@@ -14,7 +14,7 @@ Ouvrez le DMG, copiez **My Explorer** dans **Applications**, éjectez l’image 
 
 Nécessite macOS 14 ou ultérieur, sur Apple Silicon ou Intel. Si vous effectuez une mise à jour depuis une version antérieure, macOS peut redemander les autorisations de confidentialité et l’accès aux mots de passe que l’application a enregistrés dans Trousseaux d’accès.
 
-Pour installer My Explorer, My Notepad et My Paint en une seule fois, utilisez le [programme d’installation de la suite My](https://github.com/leoars/my-suite/blob/main/docs/readme/en.md).
+Pour installer My Explorer, My Notepad, My Paint et My Calc en une seule fois, utilisez le [programme d’installation de la suite My](https://github.com/leoars/my-suite/blob/main/docs/readme/fr.md).
 
 ## Fonctionnalités
 
@@ -126,11 +126,13 @@ Les raccourcis avec Ctrl fonctionnent comme vous les connaissez déjà, y compri
 
 ## Un élément de la suite My
 
-My Explorer fait partie de la suite My : trois applications pour macOS simples et directes, avec les menus et les raccourcis de toujours.
+My Explorer fait partie de la suite My : quatre applications pour macOS simples et directes, avec les menus et les raccourcis de toujours.
 
 - **My Explorer** (ce dépôt) : gestionnaire de fichiers.
 - **[My Notepad](https://github.com/leoars/My-Notepad/blob/main/docs/readme/fr.md)** : éditeur de texte simple. Une fois installé, un double-clic sur un fichier .txt ouvre le texte dans My Notepad, et le menu contextuel s’enrichit de **Modifier avec My Notepad**.
 - **[My Paint](https://github.com/leoars/my-paint/blob/main/docs/readme/fr.md)** : éditeur d’images simple. Une fois installé, le menu contextuel des images s’enrichit de **Modifier avec My Paint**.
+- **[My Calc](https://github.com/leoars/my-calc/blob/main/docs/readme/fr.md)** : calculatrice simple.
+- **[My Suite](https://github.com/leoars/my-suite/blob/main/docs/readme/fr.md)** : le programme d’installation qui réunit les quatre applications, avec le choix de celles à installer.
 
 ## Installer à partir du code source
 
