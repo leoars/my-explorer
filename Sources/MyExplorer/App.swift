@@ -3022,16 +3022,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         browser.table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(browser.tree.outline)
-        let clipboard = NSPasteboard.general.changeCount
-        guard !browser.acceptsFileListCommands,
-              !validateMenuItem(NSMenuItem(title: "Copy", action: #selector(copy(_:)), keyEquivalent: "c")),
-              !validateMenuItem(NSMenuItem(title: "Paste", action: #selector(paste(_:)), keyEquivalent: "v")) else {
-            throw SmokeFailure.failed("Tree focus enabled commands for a residual file selection")
+        // With the tree focused, the file commands act on the tree's folder, never on the list's
+        // retained selection (only Copy is sent here, so nothing in the fixture moves or is deleted).
+        guard !browser.acceptsFileListCommands, browser.acceptsFileCommands,
+              let treeFolder = browser.tree.selectedFolder?.entry.url,
+              browser.pasteDestination(nil) == treeFolder,
+              validateMenuItem(NSMenuItem(title: "Copy", action: #selector(copy(_:)), keyEquivalent: "c")) else {
+            throw SmokeFailure.failed("Tree focus did not aim the file commands at the tree's folder")
         }
         try sendKey("c", code: 8, flags: .control, to: browser)
-        try sendKey("x", code: 7, flags: .command, to: browser)
-        try sendKey("", code: 117, flags: [], to: browser)
-        guard NSPasteboard.general.changeCount == clipboard, !FileCommands.shared.isBusy, window.attachedSheet == nil else {
+        try await waitForCondition("Control+C in the tree copies the tree's folder only") {
+            !FileCommands.shared.isBusy && FileCommands.shared.pasteURLs == [treeFolder]
+        }
+        guard window.attachedSheet == nil else {
             throw SmokeFailure.failed("Tree keyboard command affected the file list")
         }
         browser.filter.stringValue = "focus fixture"

@@ -4,7 +4,7 @@
 // iconutil -c icns .build/AppIcon.iconset -o Resources/AppIcon.icns
 //
 // The symmetric folder, leaned like the My Notepad pad, fills the whole canvas (no transparent frame) and uses
-// the My Suite palette: suite blue, cream paper and "My" lettering on the front pocket.
+// the My Suite palette: suite blue, cream paper and a cream label with "My" in navy on the front pocket.
 import AppKit
 import CoreText
 
@@ -101,11 +101,23 @@ func drawFace(_ context: CGContext) {
     context.move(to: CGPoint(x: 145, y: 354)); context.addLine(to: CGPoint(x: 878, y: 354)); context.strokePath()
     context.restoreGState()
 
+    // Cream label sunk into the pocket with "My" in navy, like the My Calc display, so the folder carries the
+    // same blue frame and cream face as the other icons of the suite.
+    let window = CGRect(x: 214, y: 430, width: 596, height: 300)
+    let bezel = CGPath(roundedRect: window.insetBy(dx: -10, dy: -10), cornerWidth: 46, cornerHeight: 46, transform: nil)
+    context.addPath(bezel); context.setFillColor(color(0x0B2F8A, alpha: 0.85)); context.fillPath()
+    let label = CGPath(roundedRect: window, cornerWidth: 38, cornerHeight: 38, transform: nil)
+    fill(context, label, stops: [(0xFFFBF0, 1, 0), (0xF6EEDB, 1, 0.6), (0xE9DDC2, 1, 1)],
+         from: CGPoint(x: window.minX + 80, y: window.minY), to: CGPoint(x: window.maxX - 80, y: window.maxY))
+    // The pocket's shade along the top and left of the label.
     context.saveGState()
-    shadow(context, x: 0, y: -5, blur: 10, color(0x06194D, alpha: 0.45))
-    context.addPath(letteringPath("My", size: 300, baseline: CGPoint(x: 512, y: 682)))
-    context.setFillColor(color(0xFFFAEE)); context.fillPath()
+    context.addPath(label); context.clip()
+    context.setLineWidth(26); context.setStrokeColor(color(0x0A1E5C, alpha: 0.22))
+    context.addPath(CGPath(roundedRect: window.offsetBy(dx: 7, dy: 9), cornerWidth: 38, cornerHeight: 38, transform: nil))
+    context.strokePath()
     context.restoreGState()
+    context.addPath(letteringPath("My", size: 250, baseline: CGPoint(x: 512, y: window.midY + 250 * 0.27)))
+    context.setFillColor(color(0x0B1E5B)); context.fillPath()
 }
 
 // The same lean for the whole folder, like the My Notepad pad, so the shape stays consistent.
