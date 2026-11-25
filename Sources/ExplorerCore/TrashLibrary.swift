@@ -36,7 +36,7 @@ public actor TrashLibrary {
     // Ask Foundation for this user's Trash on each local volume. Never create a Trash while browsing.
     private static func systemRoots() -> [URL] {
         let fm = FileManager.default
-        let home = fm.homeDirectoryForCurrentUser
+        let home = RealHome.url
         var result = [home.appendingPathComponent(".Trash", isDirectory: true)]
         let volumes = fm.mountedVolumeURLs(includingResourceValuesForKeys: [.volumeIsLocalKey], options: [.skipHiddenVolumes]) ?? []
         for volume in volumes where volume.path != "/" {

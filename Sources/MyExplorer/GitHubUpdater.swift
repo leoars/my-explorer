@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#if !APP_STORE
 import AppKit
 import ExplorerCore
 
@@ -236,3 +237,4 @@ final class GitHubUpdater {
         alert.beginSheetModal(for: window, completionHandler: nil)
     }
 }
+#endif

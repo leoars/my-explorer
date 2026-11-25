@@ -16,14 +16,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var ocrBatchViewer: OCRBatchWindowController?
     private var fontSettings: FontSettingsController?
     private var restartingForUpdate = false
+    #if !APP_STORE
     private var updater: GitHubUpdater?
+    #endif
     private var optionsSettings: OptionsSettingsController?
     private var startupPreferences = StartupPreferences()
     private var sessionPreferences = SessionPreferences()
     private var sessionSaveTask: Task<Void, Never>?
     private var lastSessionState: (tabs: [SessionTabState], activeIndex: Int)?
     private var cloudSettings: CloudSettingsController?
+    #if !APP_STORE
     private var automationSettings: AutomationSettingsController?
+    #else
+    private var folderAccess: FolderAccessWindowController?
+    #endif
     private var smokeDefaultsName: String?
     private var terminationRequested = false
     private var terminationReady = false
@@ -31,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var interruptionAlert: NSAlert?
     private var quitSmokeExpectation: (code: OperationInterruptionCode?, destination: URL, files: [String: Data])?
 
+    #if !APP_STORE
     /// Gives an installed copy the custom Finder icon that escapes the grey plate. Only copies in
     /// an Applications folder qualify, so build output and test bundles keep a clean signature.
     private static func applyFinderIcon(_ icon: NSImage) {
@@ -42,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
               !CustomBundleIcon.isPresent(at: bundle), FileManager.default.isWritableFile(atPath: bundle.path) else { return }
         _ = NSWorkspace.shared.setIcon(icon, forFile: bundle.path)
     }
+    #endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let arguments = ProcessInfo.processInfo.arguments
@@ -53,10 +61,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             tile.imageScaling = .scaleProportionallyUpOrDown
             NSApp.dockTile.contentView = tile
             NSApp.dockTile.display()
+            #if !APP_STORE
+            // The App Store copy is sealed by the store; its icon is the one in the bundle.
             Self.applyFinderIcon(icon)
+            #endif
         }
+        #if APP_STORE
+        // No test harness and no automation host in the App Store build (docs/APP-STORE.md).
+        let smoke = false
+        #else
         let smoke = arguments.contains("--smoke-test")
         automationHost = arguments.contains("--automation-host") && !smoke
+        #endif
         if smoke {
             let suiteIndex = arguments.firstIndex(of: "--smoke-suite")
             let requestedSuite = suiteIndex.flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
@@ -103,11 +119,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if !automationHost && !smoke { secureFolders.observeSession() }
         NotificationCenter.default.addObserver(self, selector: #selector(shortcutFoldersChanged), name: FolderShortcuts.didChange, object: nil)
         installMenu()
+        #if APP_STORE
+        // Folder access (docs/APP-STORE.md, stage 2): start the granted folders' access before the
+        // first listing, so the restored tabs, the startup folder and the tree can read them.
+        if arguments.contains("--reset-folder-access") { SandboxAccess.shared.reset() }
+        SandboxAccess.shared.activate()
+        SandboxAccess.shared.onChange = { [weak self] in
+            self?.controller?.folderAccessChanged()
+            self?.folderAccess?.reload()
+        }
+        #endif
         let pathIndex = arguments.firstIndex(of: "--directory")
         let path = pathIndex.flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
+        #if APP_STORE
+        let fixtureRoot: URL? = nil
+        let sidebarHome: URL? = nil
+        #else
         let fixtureIndex = arguments.firstIndex(of: "--session-fixture-root")
         let fixtureRoot = smoke ? fixtureIndex.flatMap { arguments.indices.contains($0 + 1) ? URL(fileURLWithPath: arguments[$0 + 1], isDirectory: true) : nil } : nil
-        let fallback = fixtureRoot ?? FileManager.default.homeDirectoryForCurrentUser
+        #endif
+        let fallback = fixtureRoot ?? RealHome.url
         if !automationHost && !smoke { _ = CloudAccounts.shared.consolidateDuplicateS3Connections() }
         let aliases = CloudAccounts.shared.connectionAliases
         let connectionIDs = Set(CloudAccounts.shared.connections.map(\.id)).union(aliases.keys)
@@ -130,7 +161,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 workspace.addTab(at: initial, sortKey: view.sortKey, sortAscending: view.sortAscending, showHidden: view.showHidden,
                     restorationFallback: path == nil && startupPreferences.restoreLastFolder ? fallback : nil)
             }
-            controller = ExplorerWindowController(initialURL: initial, sidebarHome: smoke ? (fixtureRoot ?? initial) : nil, existingWorkspace: workspace)
+            #if !APP_STORE
+            let sidebarHome = smoke ? (fixtureRoot ?? initial) : nil
+            #endif
+            controller = ExplorerWindowController(initialURL: initial, sidebarHome: sidebarHome, existingWorkspace: workspace)
             controller?.restorationFallbackTabs = fallbackTabs
         }
         if let controller { configureCallbacks(controller); scheduleSessionSave() }
@@ -138,6 +172,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if arguments.contains("--light") { controller?.window?.appearance = NSAppearance(named: .aqua) }
         controller?.showWindow(nil)
         if !automationHost { NSApp.activate(ignoringOtherApps: true) }
+        #if APP_STORE
+        // The store updates the app, and the assistant connection (MCP) is not part of this build.
+        showInterruptionNotices()
+        if let window = controller?.window { SandboxAccess.shared.askOnFirstLaunch(in: window) }
+        #else
         if smoke { runSmokeTest(root: initial, arguments: arguments) }
         else {
             AppAutomation.shared.onLanguage = { [weak self] language in self?.changeLanguage(language) }
@@ -153,6 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 showInterruptionNotices()
             }
         }
+        #endif
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { !automationHost }
@@ -160,7 +200,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if terminationReady { return .terminateNow }
         guard !terminationRequested else { return .terminateCancel }
         terminationRequested = true
+        #if !APP_STORE
         if !restartingForUpdate { updater?.cancel() }
+        #endif
         controller?.savePresentation()
         sessionSaveTask?.cancel(); sessionSaveTask = nil
         saveSession()
@@ -176,11 +218,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         Task {
             if let task = FileCommands.shared.task { await task.value }
             if !automationHost, smokeDefaultsName == nil, await !secureFolders.lockForExit() {
+                #if !APP_STORE
                 if restartingForUpdate { restartingForUpdate = false; updater?.cancel() }
+                #endif
                 FileCommands.shared.resumeAfterCancelledQuit()
                 terminationRequested = false
                 return
             }
+            #if !APP_STORE
             if restartingForUpdate, let updater {
                 do { try await updater.installForRestart() }
                 catch {
@@ -192,6 +237,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                     return
                 }
             }
+            #endif
             await AppAutomation.shared.shutdown()
             await AppAutomation.files.clearLocalTransferHistory()
             terminationReady = true
@@ -201,11 +247,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        #if !APP_STORE
         if restartingForUpdate {
             do { try UpdateInstaller.reopenAfterExit(Bundle.main.bundleURL) }
             catch { NSLog("Unable to reopen updated My Explorer: %@", error.localizedDescription) }
         }
         verifyQuitOperationSmoke()
+        #endif
         if let smokeDefaultsName, !ProcessInfo.processInfo.arguments.contains("--close-main-window-smoke"), !ProcessInfo.processInfo.arguments.contains("--save-layout-smoke"), !ProcessInfo.processInfo.arguments.contains("--save-tabs-smoke"), !ProcessInfo.processInfo.arguments.contains("--restore-tabs-smoke") {
             UserDefaults.standard.removePersistentDomain(forName: smokeDefaultsName)
         }
@@ -214,7 +262,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private func changeLanguage(_ language: AppLanguage) {
         guard language != L10n.preferences.selection else { return }
         let previousCloudText = Dictionary(uniqueKeysWithValues: Self.cloudSettingsKeys.map { ($0, L10n.text($0)) })
+        #if !APP_STORE
         automationSettings?.close(); automationSettings = nil
+        #else
+        folderAccess?.close(); folderAccess = nil
+        #endif
         L10n.preferences.select(language)
         relocalizeCloudSettings(previousText: previousCloudText)
         let settingsVisible = fontSettings?.window?.isVisible == true
@@ -429,7 +481,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         add(appMenu, L10n.text("app.about"), #selector(showAbout))
         appMenu.addItem(.separator())
         add(appMenu, L10n.text("options.title"), #selector(showOptions), ",")
+        #if !APP_STORE
         add(appMenu, L10n.text("updates.check_menu"), #selector(checkForUpdates))
+        #endif
         appMenu.addItem(.separator())
         let services = NSMenu(title: L10n.text("quick.services"))
         appMenu.addItem(withTitle: services.title, action: nil, keyEquivalent: "").submenu = services
@@ -529,10 +583,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         controller?.rebuildMenuStrip()
     }
 
+    #if !APP_STORE
     @objc private func checkForUpdates(_ sender: Any?) {
         guard let window = controller?.window else { return }
         updater?.checkNow(from: window)
     }
+    #endif
 
     /// The README of the public repository, in the language of the interface.
     @objc private func openHelp(_ sender: Any?) {
@@ -550,7 +606,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc private func decreaseFonts(_ sender: Any?) { ExplorerStyle.preferences.adjustAllFontSizes(by: -1) }
     @objc private func cut(_ sender: Any?) {
         if let editor = NSApp.keyWindow?.firstResponder as? NSTextView { editor.cut(sender) }
-        else if NSApp.keyWindow === controller?.window, controller?.acceptsFileListCommands == true { controller?.cutFiles(sender) }
+        else if NSApp.keyWindow === controller?.window, controller?.acceptsFileCommands == true { controller?.cutFiles(sender) }
     }
     @objc private func copy(_ sender: Any?) {
         if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
@@ -560,14 +616,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 editor.copy(sender)
             }
         }
-        else if NSApp.keyWindow === controller?.window, controller?.acceptsFileListCommands == true { controller?.copyFiles(sender) }
+        else if NSApp.keyWindow === controller?.window, controller?.acceptsFileCommands == true { controller?.copyFiles(sender) }
     }
     @objc private func paste(_ sender: Any?) {
         if let editor = NSApp.keyWindow?.firstResponder as? NSTextView { editor.paste(sender) }
-        else if NSApp.keyWindow === controller?.window, controller?.acceptsFileListCommands == true { controller?.pasteFiles(sender) }
+        else if NSApp.keyWindow === controller?.window, controller?.acceptsFileCommands == true { controller?.pasteFiles(sender) }
     }
     @objc private func moveFilesHere(_ sender: Any?) {
-        guard !(NSApp.keyWindow?.firstResponder is NSTextView), NSApp.keyWindow === controller?.window, controller?.acceptsFileListCommands == true else { return }
+        guard !(NSApp.keyWindow?.firstResponder is NSTextView), NSApp.keyWindow === controller?.window, controller?.acceptsFileCommands == true else { return }
         controller?.moveFilesHere(sender)
     }
     @objc private func undoFiles(_ sender: Any?) {
@@ -590,11 +646,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
     @objc private func showOptions(_ sender: Any?) {
         if optionsSettings == nil {
+            #if APP_STORE
+            let settings = OptionsSettingsController(preferences: startupPreferences, sessionPreferences: sessionPreferences)
+            settings.onFolderAccess = { [weak self] in self?.showFolderAccess(nil) }
+            #else
             let settings = OptionsSettingsController(preferences: startupPreferences, sessionPreferences: sessionPreferences, updater: updater)
-            settings.onChange = { [weak self] in self?.saveSession() }
-            settings.onExpandTreeChange = { [weak self] in self?.controller?.syncTreeToOpenFolder() }
             settings.onMasterPassword = { [weak self] in self?.secureFolders.configureMaster(nil) }
             settings.onConnectAssistant = { [weak self] in self?.showAutomationSettings(nil) }
+            #endif
+            settings.onChange = { [weak self] in self?.saveSession() }
+            settings.onExpandTreeChange = { [weak self] in self?.controller?.syncTreeToOpenFolder() }
             settings.onShowFonts = { [weak self] in self?.showFontSettings(nil) }
             settings.onLanguageChange = { [weak self] in self?.changeLanguage($0) }
             optionsSettings = settings
@@ -602,6 +663,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         optionsSettings?.showWindow(nil)
         optionsSettings?.window?.makeKeyAndOrderFront(nil)
     }
+    #if APP_STORE
+    @objc private func showFolderAccess(_ sender: Any?) {
+        if folderAccess == nil { folderAccess = FolderAccessWindowController() }
+        folderAccess?.reload()
+        folderAccess?.showWindow(nil)
+        folderAccess?.window?.makeKeyAndOrderFront(nil)
+    }
+    #endif
     @objc private func showCloudSettings(_ sender: Any?) {
         if cloudSettings?.window?.isVisible != true {
             let settings = CloudSettingsController()
@@ -623,6 +692,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         cloudSettings?.window?.makeKeyAndOrderFront(nil)
     }
 
+    // The graphical test harness (scripts/smoke-test.sh) is left out of the App Store build.
+    #if !APP_STORE
     private func testS3CredentialImport(_ settings: CloudSettingsController) async throws {
         guard let window = settings.window, let content = window.contentView else { throw SmokeFailure.failed("Missing settings window") }
         let views = descendants(of: content)
@@ -716,6 +787,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
 
+    #endif
+
     private static let cloudSettingsKeys = ["cloud.manage", "cloud.new", "cloud.remove", "cloud.provider", "cloud.name",
         "cloud.bucket", "cloud.region", "cloud.account", "cloud.access_key", "cloud.secret", "cloud.session_token",
         "cloud.sas", "cloud.access_token", "cloud.credentials_note", "cloud.connect", "cloud.testing",
@@ -752,7 +825,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(openShortcutFolder(_:)) { return controller != nil && NSApp.modalWindow == nil }
+        #if !APP_STORE
         if menuItem.action == #selector(checkForUpdates) { return controller?.window != nil && updater?.canCheckNow == true }
+        #endif
         if menuItem.action == #selector(batchOCR) {
             guard NSApp.keyWindow === controller?.window, let controller else { return false }
             return controller.validateMenuItem(NSMenuItem(title: "", action: #selector(ExplorerWindowController.batchOCR), keyEquivalent: ""))
@@ -786,12 +861,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 }
                 return action == #selector(copy(_:)) ? editor.selectedRange().length > 0 : editor.isEditable
             }
-            guard let controller, NSApp.keyWindow === controller.window, controller.acceptsFileListCommands else { return false }
+            guard let controller, NSApp.keyWindow === controller.window, controller.acceptsFileCommands else { return false }
             return controller.validateMenuItem(NSMenuItem(title: menuItem.title, action: forwarded, keyEquivalent: ""))
         }
         if menuItem.action == #selector(moveFilesHere) {
-            guard NSApp.keyWindow === controller?.window, controller?.acceptsFileListCommands == true, !(NSApp.keyWindow?.firstResponder is NSTextView),
-                  let destination = controller?.workspace.activeTab?.session.history.current.url else { return false }
+            guard NSApp.keyWindow === controller?.window, controller?.acceptsFileCommands == true, !(NSApp.keyWindow?.firstResponder is NSTextView),
+                  let destination = controller?.pasteDestination(nil) else { return false }
             return FileCommands.shared.canPaste(into: destination) && FileCommands.shared.canTransfer(FileCommands.shared.pasteURLs, to: destination, move: true)
         }
         if menuItem.action == #selector(increaseFonts) || menuItem.action == #selector(decreaseFonts) {
@@ -809,10 +884,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc private func selectLanguage(_ sender: NSMenuItem) {
         if let raw = sender.representedObject as? String, let language = AppLanguage(rawValue: raw) { changeLanguage(language) }
     }
+    #if !APP_STORE
     @objc private func showAutomationSettings(_ sender: Any?) {
         if automationSettings?.window?.isVisible != true { automationSettings = AutomationSettingsController() }
         automationSettings?.showWindow(nil)
     }
+    #endif
     @objc private func togglePreview(_ sender: Any?) { controller?.togglePreviewPane(sender) }
 
     @objc private func connectToServer(_ sender: Any?) { controller?.systemVolumes.promptForServer() }
@@ -842,6 +919,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         ocrViewer?.open(url)
     }
 
+    #if !APP_STORE
     private func runSmokeTest(root: URL, arguments: [String]) {
         Task {
             do {
@@ -1161,6 +1239,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
 
+    #endif
+
     private func showInterruptionNotices() {
         let store = FileCommands.shared.interruptionStore
         let notices = store.pendingNotices
@@ -1199,6 +1279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
 
+    #if !APP_STORE
     private func testInterruptionNotice(root: URL) async throws {
         guard let browser = controller, let window = browser.window else { throw SmokeFailure.failed("Missing notice browser") }
         let store = FileCommands.shared.interruptionStore
@@ -4253,6 +4334,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         try await waitForListing(browser)
         try await waitForCondition("first favorite opened") { same(browser.session.history.current.url, archive) }
 
+        // A favorite clicked in the tree stays selected there, and its folders open under it,
+        // without the tree jumping to the folder's own place.
+        let inner = archive.appendingPathComponent("Inner")
+        try FileManager.default.createDirectory(at: inner, withIntermediateDirectories: true)
+        guard let archiveNode = tree.favoritesRoot.children?.first(where: { same($0.url, archive) }) else {
+            throw SmokeFailure.failed("Missing Archive favorite row")
+        }
+        browser.window?.makeFirstResponder(outline)
+        outline.selectRowIndexes(IndexSet(integer: outline.row(forItem: archiveNode)), byExtendingSelection: false)
+        try await waitForListing(browser)
+        try await waitForCondition("favorite kept selected") { outline.item(atRow: outline.selectedRow) as AnyObject? === archiveNode }
+        outline.expandItem(archiveNode)
+        try await waitForCondition("favorite folders read") { archiveNode.children?.contains { same($0.url, inner) } == true && outline.isItemExpanded(archiveNode) }
+        guard let innerNode = archiveNode.children?.first(where: { same($0.url, inner) }) else { throw SmokeFailure.failed("Missing Inner under the favorite") }
+        outline.selectRowIndexes(IndexSet(integer: outline.row(forItem: innerNode)), byExtendingSelection: false)
+        try await waitForCondition("folder inside the favorite opened") { same(browser.session.history.current.url, inner) && !browser.session.isLoading }
+        guard outline.item(atRow: outline.selectedRow) as AnyObject? === innerNode else {
+            throw SmokeFailure.failed("Tree left the favorite for \((outline.item(atRow: outline.selectedRow) as? FolderNode)?.url.path ?? "nothing")")
+        }
+
+        // Reading the tree again (after any file operation) keeps the folder selected inside the favorite.
+        tree.refresh()
+        try await Task.sleep(for: .milliseconds(500))
+        guard outline.item(atRow: outline.selectedRow) as AnyObject? === innerNode else {
+            throw SmokeFailure.failed("Tree refresh left the favorite for \((outline.item(atRow: outline.selectedRow) as? FolderNode)?.url.path ?? "nothing")")
+        }
+
+        // With the tree holding the keyboard, the file commands act on its folder, as in the list.
+        guard browser.window?.firstResponder === outline, browser.acceptsFileCommands else { throw SmokeFailure.failed("Tree folder not accepted by the file commands") }
+        for action in [#selector(ExplorerWindowController.properties(_:)), #selector(ExplorerWindowController.trashFiles(_:)),
+                       #selector(ExplorerWindowController.renameFile(_:)), #selector(ExplorerWindowController.copyFiles(_:))] {
+            guard browser.validateMenuItem(NSMenuItem(title: "", action: action, keyEquivalent: "")) else {
+                throw SmokeFailure.failed("Tree command disabled: \(action)")
+            }
+        }
+        guard let innerMenu = outline.contextMenuForRow?(outline.row(forItem: innerNode)),
+              innerMenu.indexOfItem(withTitle: L10n.text("command.properties")) >= 0,
+              innerMenu.indexOfItem(withTitle: L10n.text("command.trash")) >= 0 else { throw SmokeFailure.failed("Tree folder menu lacks the list's commands") }
+        browser.window?.makeFirstResponder(browser.fileListView)
+        try FileManager.default.removeItem(at: inner)
+
         // The tree's context menu removes a favorite.
         guard let projectsNode = tree.favoritesRoot.children?.last, let treeMenu = outline.contextMenuForRow?(outline.row(forItem: projectsNode)) else {
             throw SmokeFailure.failed("Missing favorite row menu")
@@ -4712,8 +4834,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         throw SmokeFailure.failed("Listing timeout")
     }
+    #endif
 }
 
+#if !APP_STORE
 enum SmokeFailure: Error { case failed(String) }
 
 @MainActor
@@ -4833,14 +4957,18 @@ private final class SmokePlaybackProbe: @unchecked Sendable {
     func beginRelease() { lock.withLock { started = true; offMain = !Thread.isMainThread } }
 }
 
+#endif
+
 @main
 struct MyExplorerApp {
     @MainActor static func main() {
+        #if !APP_STORE
         let diagnosticArguments = Array(ProcessInfo.processInfo.arguments.dropFirst())
         if diagnosticArguments.contains(where: { ["--validate-s3", "--validate-s3-upload-cancellation", "--validate-s3-auth", "--list-s3-validation-connections", "--import-s3-validation-credentials", "--remove-s3-validation-connection"].contains($0) }) {
             Task { exit(await S3ValidationCommand.run(arguments: diagnosticArguments)) }
             dispatchMain()
         }
+        #endif
         if ProcessInfo.processInfo.arguments.contains("--verify-localizations") {
             for language in AppLanguage.allCases where language != .system {
                 let localization = Localization(language: language)
@@ -4849,6 +4977,15 @@ struct MyExplorerApp {
             }
             return
         }
+        #if !APP_STORE
+        // Installing the App Store build moves these preferences into its container: take a copy
+        // back before anything reads or writes them (docs/APP-STORE.md, stage 3).
+        if let identifier = Bundle.main.bundleIdentifier, !ProcessInfo.processInfo.arguments.contains("--smoke-test") {
+            let restored = StorePreferencesRecovery.recoverIfNeeded(domain: identifier, source:
+                StorePreferencesRecovery.containerPreferences(identifier: identifier, home: FileManager.default.homeDirectoryForCurrentUser))
+            if restored > 0 { NSLog("My Explorer restored %d preferences from the App Store version", restored) }
+        }
+        #endif
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.setActivationPolicy(.regular)

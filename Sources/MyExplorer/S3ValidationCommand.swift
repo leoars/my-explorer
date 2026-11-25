@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#if !APP_STORE
 import Foundation
 import Darwin
 import ExplorerCore
@@ -179,3 +180,4 @@ enum S3ValidationCommand {
         guard ftruncate(descriptor, off_t(data.count)) == 0, fsync(descriptor) == 0 else { throw CloudFailure(.io) }
     }
 }
+#endif

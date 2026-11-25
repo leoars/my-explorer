@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#if !APP_STORE
 import Foundation
 import ExplorerCore
 
@@ -66,3 +67,4 @@ actor SmokeS3DragTransport: CloudTransport {
         return CloudResponse(statusCode: 200, headers: ["ETag": etag, "Content-Length": String(data.count)])
     }
 }
+#endif

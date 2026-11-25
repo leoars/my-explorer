@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#if !APP_STORE
 import ExplorerCore
 import Foundation
 
@@ -80,3 +81,4 @@ private extension Bundle {
             minorVersion: parts.count > 1 ? parts[1] : 0, patchVersion: parts.count > 2 ? parts[2] : 0))
     }
 }
+#endif

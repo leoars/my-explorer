@@ -176,7 +176,7 @@ public final class FolderShortcuts {
 
     private func paths(_ key: String) -> [String] {
         var seen = Set<String>()
-        return (defaults.array(forKey: key) as? [Any] ?? []).compactMap { ($0 as? String)?.precomposedStringWithCanonicalMapping }
+        return (defaults.array(forKey: key) ?? []).compactMap { ($0 as? String)?.precomposedStringWithCanonicalMapping }
             .filter { $0.hasPrefix("/") && seen.insert($0).inserted }
     }
 

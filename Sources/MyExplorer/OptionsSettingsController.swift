@@ -3,11 +3,21 @@ import AppKit
 import ExplorerCore
 import ExplorerLocalization
 
+#if APP_STORE
+/// The App Store updates the app, so Options has no update controls; protected folders and the
+/// assistant connection are not part of that build either (docs/APP-STORE.md).
+typealias OptionsUpdater = Never
+#else
+typealias OptionsUpdater = GitHubUpdater
+#endif
+
 @MainActor
 final class OptionsSettingsController: DialogWindowController {
+    #if !APP_STORE
     private let updates = NSButton(checkboxWithTitle: L10n.text("updates.option"), target: nil, action: nil)
     private let updateStatus = NSTextField(wrappingLabelWithString: "")
     private let updater: GitHubUpdater?
+    #endif
     let confirmDeletion: NSButton
     let restoreFolder: NSButton
     let restoreTabs: NSButton
@@ -18,6 +28,8 @@ final class OptionsSettingsController: DialogWindowController {
     var onMasterPassword: (() -> Void)?
     var onConnectAssistant: (() -> Void)?
     var onShowFonts: (() -> Void)?
+    /// Options › Folder access…, in the App Store build (the sandbox).
+    var onFolderAccess: (() -> Void)?
     /// The language of the interface is chosen here; the window is no place for a control that
     /// is used once.
     var onLanguageChange: ((AppLanguage) -> Void)?
@@ -28,8 +40,10 @@ final class OptionsSettingsController: DialogWindowController {
     private let preferences: StartupPreferences
     private let sessionPreferences: SessionPreferences
 
-    init(preferences: StartupPreferences, sessionPreferences: SessionPreferences, updater: GitHubUpdater?) {
+    init(preferences: StartupPreferences, sessionPreferences: SessionPreferences, updater: OptionsUpdater? = nil) {
+        #if !APP_STORE
         self.updater = updater
+        #endif
         self.preferences = preferences
         self.sessionPreferences = sessionPreferences
         confirmDeletion = NSButton(checkboxWithTitle: L10n.text("options.confirm_deletion"), target: nil, action: nil)
@@ -71,6 +85,7 @@ final class OptionsSettingsController: DialogWindowController {
         fonts.bezelStyle = .rounded
         let tabsHelp = NSTextField(wrappingLabelWithString: L10n.text("options.restore_tabs_help"))
         tabsHelp.textColor = .secondaryLabelColor
+        #if !APP_STORE
         let master = NSButton(title: L10n.text("vault.master"), target: self, action: #selector(configureMaster))
         updates.target = self
         updates.action = #selector(toggleUpdates)
@@ -90,6 +105,7 @@ final class OptionsSettingsController: DialogWindowController {
             checkNow.isEnabled = updater.canCheckNow
             self.updateStatus.stringValue = L10n.text(updater.status)
         }
+        #endif
         language.addItems(withTitles: AppLanguage.allCases.map { $0 == .system ? L10n.text("language.system") : $0.nativeName })
         language.selectItem(at: AppLanguage.allCases.firstIndex(of: L10n.preferences.selection) ?? 0)
         language.target = self; language.action = #selector(languageChanged)
@@ -121,7 +137,15 @@ final class OptionsSettingsController: DialogWindowController {
         recentsHelp.textColor = .secondaryLabelColor
         let shortcutsSection = NSStackView(views: [shortcutsTitle, showFavorites, showRecents, limitRow, recentsHelp])
         shortcutsSection.orientation = .vertical; shortcutsSection.alignment = .leading; shortcutsSection.spacing = 8
+        #if APP_STORE
+        let folderAccess = NSButton(title: L10n.text("access.options"), target: self, action: #selector(showFolderAccess))
+        folderAccess.setAccessibilityIdentifier("options.folderAccess")
+        let accessRow = NSStackView(views: [fonts, folderAccess])
+        accessRow.spacing = 10
+        let stack = NSStackView(views: [languageRow, restoreTabs, tabsHelp, restoreFolder, help, expandTree, expandTreeHelp, shortcutsSection, autoplayMedia, autoplayHelp, confirmDeletion, accessRow])
+        #else
         let stack = NSStackView(views: [languageRow, restoreTabs, tabsHelp, restoreFolder, help, expandTree, expandTreeHelp, shortcutsSection, autoplayMedia, autoplayHelp, confirmDeletion, updateControls, updateStatus, fonts, master])
+        #endif
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 16
         stack.translatesAutoresizingMaskIntoConstraints = false
         let general = NSTabViewItem(identifier: "general")
@@ -130,6 +154,7 @@ final class OptionsSettingsController: DialogWindowController {
         general.view = generalView
         generalView.addSubview(stack)
 
+        #if !APP_STORE
         let integrations = NSTabViewItem(identifier: "integrations")
         integrations.label = L10n.text("options.integrations")
         let integrationsView = NSView()
@@ -138,10 +163,13 @@ final class OptionsSettingsController: DialogWindowController {
         connect.setAccessibilityIdentifier("options.connectAssistant")
         connect.translatesAutoresizingMaskIntoConstraints = false
         integrationsView.addSubview(connect)
+        #endif
 
         let tabs = NSTabView()
         tabs.addTabViewItem(general)
+        #if !APP_STORE
         tabs.addTabViewItem(integrations)
+        #endif
         tabs.selectTabViewItem(general)
         tabs.translatesAutoresizingMaskIntoConstraints = false
         guard let content = window.contentView else { return }
@@ -151,28 +179,39 @@ final class OptionsSettingsController: DialogWindowController {
             tabs.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
             tabs.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
             tabs.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12),
-            connect.leadingAnchor.constraint(equalTo: integrationsView.leadingAnchor, constant: 16),
-            connect.topAnchor.constraint(equalTo: integrationsView.topAnchor, constant: 16),
             stack.leadingAnchor.constraint(equalTo: generalView.leadingAnchor, constant: 16),
             stack.trailingAnchor.constraint(equalTo: generalView.trailingAnchor, constant: -16),
             stack.topAnchor.constraint(equalTo: generalView.topAnchor, constant: 16),
-            updateStatus.widthAnchor.constraint(equalTo: stack.widthAnchor),
             help.widthAnchor.constraint(equalTo: stack.widthAnchor),
             tabsHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
             expandTreeHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
             autoplayHelp.widthAnchor.constraint(equalTo: stack.widthAnchor),
             recentsHelp.widthAnchor.constraint(equalTo: stack.widthAnchor)
         ])
+        #if !APP_STORE
+        NSLayoutConstraint.activate([
+            connect.leadingAnchor.constraint(equalTo: integrationsView.leadingAnchor, constant: 16),
+            connect.topAnchor.constraint(equalTo: integrationsView.topAnchor, constant: 16),
+            updateStatus.widthAnchor.constraint(equalTo: stack.widthAnchor)
+        ])
+        #endif
         // Tall enough for everything the General tab holds, in any language and font size.
         generalView.layoutSubtreeIfNeeded()
         let needed = stack.fittingSize.height + 16 + 16 + 12 + 12 + 40
+        #if APP_STORE
+        // Without the update and protected-folder controls the tab is shorter than the window.
+        window.setContentSize(NSSize(width: window.frame.width, height: needed))
+        #else
         if needed > window.frame.height { window.setContentSize(NSSize(width: window.frame.width, height: needed)) }
+        #endif
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    #if !APP_STORE
     @objc private func checkForUpdates() { if let window { updater?.checkNow(from: window) } }
     @objc private func toggleUpdates(_ sender: NSButton) {
         updater?.setEnabled(sender.state == .on)
     }
+    #endif
     @objc private func expandTreeChanged(_ sender: NSButton) {
         ExplorerStyle.browserPreferences.expandTreeToOpenFolder = sender.state == .on
         onExpandTreeChange?()
@@ -203,6 +242,7 @@ final class OptionsSettingsController: DialogWindowController {
     @objc private func configureMaster(_ sender: Any?) { onMasterPassword?() }
     @objc private func connectAssistant() { onConnectAssistant?() }
     @objc private func showFonts(_ sender: Any?) { onShowFonts?() }
+    @objc private func showFolderAccess(_ sender: Any?) { onFolderAccess?() }
     @objc private func languageChanged(_ sender: NSPopUpButton) {
         guard AppLanguage.allCases.indices.contains(sender.indexOfSelectedItem) else { return }
         onLanguageChange?(AppLanguage.allCases[sender.indexOfSelectedItem])

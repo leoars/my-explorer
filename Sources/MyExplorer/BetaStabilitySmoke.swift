@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#if !APP_STORE
 import AppKit
 import CoreText
 import CryptoKit
@@ -254,3 +255,4 @@ enum BetaStabilitySmoke {
         return outputs
     }
 }
+#endif

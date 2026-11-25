@@ -89,4 +89,20 @@ struct ExplorerSearchTests {
         spec.tag = "Personal"
         #expect(!spec.predicate().evaluate(with: document))
     }
+
+    /// A single criterion (only the name, say) must reach Spotlight: an AND of one raised in
+    /// NSMetadataQuery and left the search window saying "Searching…" for good.
+    @Test @MainActor func oneCriterionIsAPredicateSpotlightAccepts() throws {
+        var spec = ExplorerSearchSpec(folder: FileManager.default.temporaryDirectory)
+        spec.name = "a"
+        #expect(!(spec.predicate() is NSCompoundPredicate))
+        #expect(spec.predicate().evaluate(with: ["kMDItemFSName": "Banana.txt"]))
+        let query = NSMetadataQuery()
+        query.predicate = spec.predicate()
+        query.searchScopes = [FileManager.default.temporaryDirectory]
+        #expect(query.start())
+        query.stop()
+        spec.fileExtension = "txt"
+        #expect(spec.predicate() is NSCompoundPredicate)
+    }
 }

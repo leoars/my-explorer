@@ -2,6 +2,7 @@
 import AppKit
 import ImageCaptureCore
 import Quartz
+import ExplorerCore
 
 /// Image Capture owns camera sessions, thumbnail loading, selection and downloads.
 @MainActor
@@ -26,7 +27,8 @@ final class DevicePhotoImporter: DialogWindowController, @preconcurrency IKDevic
         camera.delegate = self
         camera.displaysDownloadsDirectoryControl = true
         camera.displaysPostProcessApplicationControl = false
-        camera.downloadsDirectory = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first
+        // The real Pictures folder: in the App Store build, `.picturesDirectory` is the container's.
+        camera.downloadsDirectory = RealHome.pictures
         let split = NSSplitView()
         split.isVertical = true
         split.dividerStyle = .thin

@@ -2,6 +2,31 @@
 import AppKit
 import CryptoKit
 import ExplorerCore
+#if APP_STORE
+/// The App Store build has no protected folders (docs/APP-STORE.md): the disk images they are
+/// made of need hdiutil, out of the sandbox's reach. A protected folder shows as an ordinary,
+/// closed folder; opening it says that it opens in the version from the website.
+@MainActor
+final class SecureFolderCommands: NSObject {
+    var onUnlock: ((URL) -> Void)?
+    var onConceal: (([URL]) -> Void)?
+    var onChange: (() -> Void)?
+
+    func observeSession() {}
+    func addCommands(to menu: NSMenu) {}
+    func isUnlocked(_ vault: URL) -> Bool { false }
+    func isInsideUnlockedVault(_ url: URL) -> Bool { false }
+    func sessionURL(_ url: URL) -> URL { url }
+    func lockForExit() async -> Bool { true }
+
+    func unlock(_ vault: URL) {
+        let alert = NSAlert()
+        alert.messageText = L10n.text("vault.store_only")
+        alert.informativeText = vault.lastPathComponent + "\n\n" + L10n.text("vault.store_only_detail")
+        _ = DialogPlacement.runModal(alert.window) { alert.runModal() }
+    }
+}
+#else
 
 @MainActor
 private final class PasswordConfirmation: NSObject {
@@ -268,23 +293,6 @@ final class SecureFolderCommands: NSObject, NSMenuItemValidation {
         message("vault.error", detail: detail)
     }
 
-    nonisolated static func contains(_ url: URL, in root: URL) -> Bool {
-        guard url.isFileURL else { return false }
-        let path = url.standardizedFileURL.path
-        let prefix = root.standardizedFileURL.path
-        if path == prefix || path.hasPrefix(prefix + "/") { return true }
-        // Sessions retain the path entered by the user, including symbolic links.
-        // Compare filesystem identities while the volume is still mounted.
-        var relation: FileManager.URLRelationship = .other
-        let target = url.resolvingSymlinksInPath()
-        do {
-            try FileManager.default.getRelationship(&relation, ofDirectoryAt: root.resolvingSymlinksInPath(), toItemAt: target)
-            return relation == .contains || relation == .same
-        } catch {
-            return false
-        }
-    }
-
     func sessionURL(_ url: URL) -> URL {
         mounts.first(where: { Self.contains(url, in: $0.value) })?.key.deletingLastPathComponent() ?? url
     }
@@ -320,6 +328,26 @@ final class SecureFolderCommands: NSObject, NSMenuItemValidation {
             return true
         } catch {
             report(error)
+            return false
+        }
+    }
+}
+#endif
+
+extension SecureFolderCommands {
+    nonisolated static func contains(_ url: URL, in root: URL) -> Bool {
+        guard url.isFileURL else { return false }
+        let path = url.standardizedFileURL.path
+        let prefix = root.standardizedFileURL.path
+        if path == prefix || path.hasPrefix(prefix + "/") { return true }
+        // Sessions retain the path entered by the user, including symbolic links.
+        // Compare filesystem identities while the volume is still mounted.
+        var relation: FileManager.URLRelationship = .other
+        let target = url.resolvingSymlinksInPath()
+        do {
+            try FileManager.default.getRelationship(&relation, ofDirectoryAt: root.resolvingSymlinksInPath(), toItemAt: target)
+            return relation == .contains || relation == .same
+        } catch {
             return false
         }
     }

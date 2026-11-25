@@ -2,6 +2,21 @@
 import Foundation
 import ExplorerCore
 
+#if APP_STORE
+/// The App Store build has no Git (docs/APP-STORE.md): nothing is inspected, so the list, the
+/// tree and the status bar show no Git mark, summary or menu.
+@MainActor
+final class GitBrowserState {
+    let snapshot: GitStatusSnapshot? = nil
+    let repositoryRootPaths: Set<String> = []
+    let result: GitInspectionResult? = nil
+    var onChange: (() -> Void)?
+    var shouldPoll: (() -> Bool)?
+    func update(directory: URL, entries: [FileEntry], force: Bool = false) {}
+    func beginNavigation(to url: URL) {}
+    func stop() {}
+}
+#else
 /// Presentation requests are coalesced and generation-checked; Git never blocks navigation.
 @MainActor
 final class GitBrowserState {
@@ -92,3 +107,4 @@ final class GitBrowserState {
         }
     }
 }
+#endif

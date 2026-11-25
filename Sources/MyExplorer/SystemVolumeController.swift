@@ -99,7 +99,7 @@ final class SystemVolumeController: NSObject {
                 var mounts = (paths as? [String] ?? []).filter { $0.hasPrefix("/") }.map { URL(fileURLWithPath: $0) }
                 if status == EEXIST && mounts.isEmpty, let existing = Self.existingShare(url) { mounts = [existing] }
                 guard !mounts.isEmpty, status == 0 || status == EEXIST else {
-                    self.reportConnectionError(status)
+                    self.reportConnectionError(status, server: url)
                     return
                 }
                 let recent = [url.absoluteString] + self.recentServers.filter { $0 != url.absoluteString }
@@ -108,7 +108,7 @@ final class SystemVolumeController: NSObject {
                 for mount in mounts { self.browser?.addTab(at: mount) }
             }
         }
-        if result != 0 { mountRequest = nil; reportConnectionError(result) }
+        if result != 0 { mountRequest = nil; reportConnectionError(result, server: url) }
     }
 
     private static func existingShare(_ server: URL) -> URL? {
@@ -121,9 +121,24 @@ final class SystemVolumeController: NSObject {
         }
     }
 
-    private func reportConnectionError(_ status: Int32) {
+    private func reportConnectionError(_ status: Int32, server: URL) {
         let error = NSError(domain: status > 0 ? NSPOSIXErrorDomain : NSOSStatusErrorDomain, code: Int(status))
+        #if APP_STORE
+        // In the sandbox a refusal of the mount itself goes to the Finder, which mounts the share
+        // for every app (docs/APP-STORE.md, decision 6); any other failure offers the same way.
+        if status == EPERM || status == EACCES { NSWorkspace.shared.open(server); return }
+        guard let window = browser?.window, window.isVisible else { return }
+        let alert = NSAlert()
+        alert.messageText = L10n.format("server.failed", error.localizedDescription)
+        alert.addButton(withTitle: L10n.text("access.done"))
+        alert.addButton(withTitle: L10n.text("server.finder"))
+        alert.buttons[1].setAccessibilityIdentifier("server.finder")
+        alert.beginSheetModal(for: window) { response in
+            if response == .alertSecondButtonReturn { NSWorkspace.shared.open(server) }
+        }
+        #else
         inform(L10n.format("server.failed", error.localizedDescription))
+        #endif
     }
 
     private func inform(_ text: String) {

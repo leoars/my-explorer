@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#if !APP_STORE
 import AppKit
 import ExplorerCore
 
@@ -119,3 +120,4 @@ final class GitReviewController: DialogWindowController {
     }
     func windowWillClose(_ notification: Notification) { query?.cancel() }
 }
+#endif

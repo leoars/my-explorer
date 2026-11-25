@@ -39,7 +39,9 @@ public struct ExplorerSearchSpec: Codable, Equatable, Sendable {
         if let since = modified.start(at: now) {
             parts.append(NSPredicate(format: "%K >= %@", "kMDItemFSContentChangeDate", since as NSDate))
         }
-        return NSCompoundPredicate(andPredicateWithSubpredicates: parts)
+        // NSMetadataQuery raises (NSInvalidArgumentException) on an AND with a single
+        // subpredicate, so one criterion goes as itself.
+        return parts.count == 1 ? parts[0] : NSCompoundPredicate(andPredicateWithSubpredicates: parts)
     }
 
     public struct WalkResults: Sendable {

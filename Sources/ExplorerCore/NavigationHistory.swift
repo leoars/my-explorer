@@ -76,7 +76,7 @@ public enum AddressParser {
             return url.standardizedFileURL
         }
         guard !text.contains("://") else { return nil }
-        let expanded = (text as NSString).expandingTildeInPath
+        let expanded = RealHome.expandingTilde(text)
         if expanded.hasPrefix("/") { return URL(fileURLWithPath: expanded).standardizedFileURL }
         return current.appendingPathComponent(expanded).explorerNormalized
     }

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
+import ExplorerCore
 
 /// Pure parsing shared with CLI tests; it never opens the supplied document.
 public enum OCRCommand {
@@ -75,7 +76,7 @@ public enum OCRCommand {
         return .init(method: "files.ocr.pdf.batch", arguments: values)
     }
     private static func localURL(_ input: String, relativeTo directory: URL) throws -> URL {
-        let value = input.hasPrefix("~") ? (input as NSString).expandingTildeInPath : input
+        let value = input.hasPrefix("~") ? RealHome.expandingTilde(input) : input
         if value.contains("://") {
             guard let parsed = URL(string: value), parsed.isFileURL else { throw AutomationError.invalidArguments }
             return parsed

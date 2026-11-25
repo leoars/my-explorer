@@ -94,6 +94,11 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
     var onShowTrash: (() -> Void)?
     private let trashRoot = FolderNode(url: URL(string: "myexplorer-trash:///")!, title: L10n.text("trash.title"), symbol: "trash", isGroup: true)
     var onManageCloud: (() -> Void)?
+    /// Called whenever the selection of the tree changes, for the commands that act on it; true
+    /// when the tree itself moved it (following the list), false when the person did.
+    var onSelectionChange: ((Bool) -> Void)?
+    /// The menu of file commands for a folder of the tree, built by the window as for the list.
+    var fileMenuForFolder: ((FileEntry, Bool) -> NSMenu?)?
     /// Whether a folder may be a favorite: a real folder of this Mac, outside protected folders.
     var canBeFavorite: ((URL) -> Bool)?
     /// The places that are always there, from the home folder to the Trash.
@@ -122,6 +127,8 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
     }
     /// The folder the tree is opening its way to, while branches are still being read.
     private var revealTarget: URL?
+    /// Where the way to `revealTarget` starts when it runs inside a favorite or recent folder.
+    private var revealStart: FolderNode?
     private var dragHoverNode: FolderNode?
     private var dragHoverTimer: Timer?
     private var dragExpansionAllowed = false
@@ -216,7 +223,8 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         fill(recentsRoot, with: recents)
         // An empty favorites group stays, as the place to drop folders on; an empty recents one goes.
         let shown = (shortcuts.showFavorites ? [favoritesRoot] : []) + (shortcuts.showRecents && !recents.isEmpty ? [recentsRoot] : [])
-        let selectedURL = (outline.item(atRow: outline.selectedRow) as? FolderNode)?.url
+        let selectedNode = outline.item(atRow: outline.selectedRow) as? FolderNode
+        let selectedURL = selectedNode?.url
         selecting = true
         if shown.map(ObjectIdentifier.init) != shortcutsShown.map(ObjectIdentifier.init) {
             for group in shortcutsShown where !shown.contains(where: { $0 === group }) { group.children?.forEach { $0.stopObserving() } }
@@ -231,7 +239,18 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
             expandFromCode { outline.expandItem(group) }
         }
         selecting = false
-        if let selectedURL { selectIfVisible(selectedURL) }
+        restoreSelection(selectedNode, url: selectedURL)
+    }
+
+    /// Selects again, after a branch was read again, the row that was selected: the same node
+    /// while it is still in the tree, so that a folder browsed inside the favorites or the recent
+    /// folders stays there, and otherwise the folder wherever it shows.
+    private func restoreSelection(_ node: FolderNode?, url: URL?) {
+        if let node, outline.row(forItem: node) >= 0 {
+            selecting = true
+            outline.selectRowIndexes(IndexSet(integer: outline.row(forItem: node)), byExtendingSelection: false)
+            selecting = false
+        } else if let url { selectIfVisible(url) }
     }
 
     /// The name the Finder shows for a folder (Documents in the person's language, say). Asked of
@@ -239,10 +258,37 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
     /// the window back.
     static func displayName(_ url: URL) -> String {
         if url.path == "/" { return L10n.text("tree.computer") }
-        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let home = RealHome.url.standardizedFileURL.path
         guard url.path.hasPrefix(home + "/") || url.path == home else { return url.lastPathComponent }
         let name = FileManager.default.displayName(atPath: url.path)
         return name.isEmpty ? url.lastPathComponent : name
+    }
+
+    /// The folder selected in the tree, for the file commands; see `folder(for:)`.
+    var selectedFolder: (entry: FileEntry, isPlace: Bool)? {
+        (outline.item(atRow: outline.selectedRow) as? FolderNode).flatMap(folder(for:))
+    }
+
+    /// A folder of the tree as an item the file commands can act on, as they would in the list:
+    /// a folder of this Mac or of a cloud connection, but not a group, a saved search, the Trash,
+    /// a volume, the computer or a connection itself. `isPlace` marks the places at the top of
+    /// the tree (the home folder, Documents, ...): they can be copied and looked at, but not moved,
+    /// renamed or deleted from there.
+    private func folder(for node: FolderNode) -> (entry: FileEntry, isPlace: Bool)? {
+        guard !node.isGroup, node.savedSearch == nil, node.volume == nil, !node.volumeLink,
+              node !== trashRoot, node !== mobileRoot else { return nil }
+        if node.url.isFileURL {
+            // The computer and the list of volumes keep their own menu; so does a favorite or recent
+            // folder that is gone, which can only be taken out of its group.
+            guard node.url.path != "/", node.url.standardizedFileURL.path != "/Volumes" else { return nil }
+            if outline.parent(forItem: node) as AnyObject? === favoritesRoot || outline.parent(forItem: node) as AnyObject? === recentsRoot,
+               !FolderPresence.shared.exists(node.url) { return nil }
+        } else {
+            guard let location = RemoteLocation.parse(node.url), !location.key.isEmpty else { return nil }
+        }
+        // A place is protected wherever it shows: at the top, as a favorite or inside the home folder.
+        let isPlace = fixedRoots.contains { !$0.isGroup && $0.url.isFileURL && $0.url.explorerIdentity == node.url.explorerIdentity }
+        return (FileEntry(url: node.url, name: node.url.lastPathComponent, isDirectory: true, kind: "Folder"), isPlace)
     }
 
     /// Whether the node is one of the favorites or recent folders, or a folder inside one of them.
@@ -296,6 +342,8 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
             return menu
         }
         guard row >= 0, let node = outline.item(atRow: row) as? FolderNode, !node.isGroup else { return nil }
+        // An ordinary folder gets the same commands as in the list.
+        if let folder = folder(for: node), let menu = fileMenuForFolder?(folder.entry, folder.isPlace) { return menu }
         let favorite = favoriteItem(for: node)
         guard node.volume != nil || node.url.path == "/" && node.url.isFileURL else {
             guard let favorite else { return nil }
@@ -403,6 +451,25 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
     /// Follows the folder open in the list: selects it and, when the option is on, first opens the
     /// branches that lead to it.
     func show(_ url: URL) {
+        // Inside a favorite or recent folder, the tree goes on from there and does not jump to the
+        // folder's own place.
+        if let branch = shortcutBranch(holding: url) {
+            if branch.url.explorerIdentity == url.explorerIdentity {
+                revealTarget = nil; revealStart = nil
+                select(branch)
+                return
+            }
+            if ExplorerStyle.browserPreferences.expandTreeToOpenFolder,
+               !ProcessInfo.processInfo.arguments.contains("--smoke-test") {
+                revealTarget = url; revealStart = branch
+                continueReveal()
+                return
+            }
+            revealTarget = nil; revealStart = nil
+            select(visibleNode(for: url, under: branch) ?? branch)
+            return
+        }
+        revealStart = nil
         // The graphical tests drive the tree by hand and expect it to stay as they left it.
         if ExplorerStyle.browserPreferences.expandTreeToOpenFolder, url.isFileURL,
            !ProcessInfo.processInfo.arguments.contains("--smoke-test") {
@@ -412,6 +479,41 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
             revealTarget = nil
             selectIfVisible(url)
         }
+    }
+
+    /// The folder of the selected favorite or recent branch that holds `url`: the selected folder
+    /// itself or one of the folders above it, up to the favorite. Nil outside such a branch.
+    private func shortcutBranch(holding url: URL) -> FolderNode? {
+        guard url.isFileURL, let selected = outline.item(atRow: outline.selectedRow) as? FolderNode,
+              !selected.isGroup, isInShortcutGroup(selected) else { return nil }
+        var node: FolderNode? = selected
+        while let current = node, current !== favoritesRoot, current !== recentsRoot {
+            if Self.contains(current.url, url) { return current }
+            node = outline.parent(forItem: current) as? FolderNode
+        }
+        return nil
+    }
+
+    /// The row of `url` among the open folders under `branch`, if it is there.
+    private func visibleNode(for url: URL, under branch: FolderNode) -> FolderNode? {
+        let first = outline.row(forItem: branch)
+        guard first >= 0 else { return nil }
+        let level = outline.level(forRow: first)
+        var row = first + 1
+        while row < outline.numberOfRows, outline.level(forRow: row) > level {
+            if let node = outline.item(atRow: row) as? FolderNode, node.url.explorerIdentity == url.explorerIdentity { return node }
+            row += 1
+        }
+        return nil
+    }
+
+    private func select(_ node: FolderNode) {
+        let row = outline.row(forItem: node)
+        guard row >= 0 else { return }
+        selecting = true
+        outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        selecting = false
+        outline.scrollRowToVisible(row)
     }
 
     private static func contains(_ ancestor: URL, _ url: URL) -> Bool {
@@ -426,8 +528,9 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         // Start from the most specific location of the tree that holds the folder (Documents before
         // the home folder, the home folder before the computer).
         let candidates = roots.filter { !$0.isGroup && $0.savedSearch == nil && $0.url.isFileURL && Self.contains($0.url, target) }
-        guard var node = candidates.max(by: { $0.url.standardizedFileURL.path.count < $1.url.standardizedFileURL.path.count }) else {
-            revealTarget = nil
+        let start = revealStart.flatMap { outline.row(forItem: $0) >= 0 && Self.contains($0.url, target) ? $0 : nil }
+        guard var node = start ?? candidates.max(by: { $0.url.standardizedFileURL.path.count < $1.url.standardizedFileURL.path.count }) else {
+            revealTarget = nil; revealStart = nil
             selectIfVisible(target)
             return
         }
@@ -441,7 +544,7 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
             guard let next = node.children?.first(where: { Self.contains($0.url, target) }) else { break }
             node = next
         }
-        revealTarget = nil
+        revealTarget = nil; revealStart = nil
         let row = outline.row(forItem: node)
         guard row >= 0 else { selectIfVisible(target); return }
         selecting = true
@@ -612,6 +715,28 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         }
     }
 
+    private static func showsLock(_ failure: DirectoryFailure?) -> Bool {
+        #if APP_STORE
+        return failure?.reason == .permission
+        #else
+        return false
+        #endif
+    }
+
+    /// After folder access changes (App Store build), reads again every folder that had failed,
+    /// without expanding it: a folder now granted gets its normal icon, one still refused its lock.
+    func retryFailures() {
+        func visit(_ node: FolderNode) {
+            if node.failure != nil, !node.isGroup, node.url.isFileURL {
+                node.failure = nil
+                outline.reloadItem(node)
+                if outline.row(forItem: node) >= 0 { load(node, expand: false) }
+            }
+            node.children?.forEach(visit)
+        }
+        roots.forEach(visit)
+    }
+
     /// Refresh expanded nodes and invalidate collapsed caches without losing valid expansion identities.
     func refresh() {
         func refreshNode(_ node: FolderNode) {
@@ -652,7 +777,8 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
                 }
                 guard let self, let node, request == self.generation, nodeRequest == node.request else { return }
                 let expanded = self.expandedNodes(under: [node])
-                let selectedURL = (self.outline.item(atRow: self.outline.selectedRow) as? FolderNode)?.url
+                let selectedNode = self.outline.item(atRow: self.outline.selectedRow) as? FolderNode
+                let selectedURL = selectedNode?.url
                 let previous = Dictionary((node.children ?? []).map { ($0.url.explorerIdentity, $0) }, uniquingKeysWith: { first, _ in first })
                 // Directory symlinks remain navigable in Details, but never recursively expand the tree.
                 node.children = entries.filter { $0.canNavigate && (!$0.isSymbolicLink || mounts[$0.id] != nil) }
@@ -680,7 +806,7 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
                     }
                 }
                 self.selecting = false
-                if let selectedURL { self.selectIfVisible(selectedURL) }
+                self.restoreSelection(selectedNode, url: selectedURL)
                 if self.outline.isItemExpanded(node) { self.observe(node) }
                 if node.needsRefresh {
                     node.needsRefresh = false
@@ -735,9 +861,19 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
         cell.setIconSize(side)
         cell.icon.imageScaling = .scaleProportionallyUpOrDown
         cell.icon.imageAlignment = .alignCenter
-        if node.failure == nil {
+        // A favorite or recent folder the sandbox refuses shows its lock before it is ever opened.
+        let shortcutParent = outline.parent(forItem: node) as AnyObject?
+        let refusedShortcut = node.failure == nil && (shortcutParent === favoritesRoot || shortcutParent === recentsRoot)
+            && FolderPresence.shared.isRefused(node.url)
+        if node.failure == nil && !refusedShortcut {
             cell.icon.image = PremiumIcons.image(icon, side: side, description: node.title)
             cell.icon.contentTintColor = nil
+        } else if refusedShortcut || Self.showsLock(node.failure) {
+            // The sandbox refused the folder (App Store build): a lock, not a warning; the tooltip
+            // and the list explain it and offer to grant access.
+            let lock = ExplorerStyle.symbol("lock.fill", description: node.title)
+            cell.icon.image = lock?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: side * 0.8, weight: .regular)) ?? lock
+            cell.icon.contentTintColor = .secondaryLabelColor
         } else {
             let warning = ExplorerStyle.symbol("exclamationmark.triangle.fill", description: node.title)
             cell.icon.image = warning?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: side, weight: .regular)) ?? warning
@@ -750,6 +886,7 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
+        onSelectionChange?(selecting)
         guard !selecting, let node = outline.item(atRow: outline.selectedRow) as? FolderNode else { return }
         if node === trashRoot {
             selecting = true; outline.deselectAll(nil); selecting = false

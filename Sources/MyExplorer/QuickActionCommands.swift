@@ -32,6 +32,7 @@ enum QuickActionCommands {
         return menu.items.isEmpty ? nil : menu
     }
 
+    #if !APP_STORE
     static func smoke(in browser: ExplorerWindowController, root: URL) throws {
         let target = FileEntry(url: root.appendingPathComponent("photo.png"), name: "photo.png", isDirectory: false)
         let fileMenu = NSMenu()
@@ -62,6 +63,7 @@ enum QuickActionCommands {
             throw SmokeFailure.failed("Empty file selection advertised as a Service")
         }
     }
+    #endif
 
     private static func chooseOutput(_ action: ImageQuickAction, inputs: [URL], in window: NSWindow) async {
         var urls = inputs

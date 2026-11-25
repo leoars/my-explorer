@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#if !APP_STORE
 import Foundation
 import ExplorerCore
 
@@ -63,3 +64,4 @@ enum CloudConnectionIdentitySmoke {
         }
     }
 }
+#endif

@@ -79,9 +79,26 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     let status = ExplorerStyle.label("", color: .secondaryLabelColor)
     let message = ExplorerStyle.label("", size: 13, color: .secondaryLabelColor)
     let errorLabel = ExplorerStyle.label("", color: .systemRed)
+    #if APP_STORE
+    /// In place of the files when the sandbox refuses the folder (docs/APP-STORE.md, stage 2).
+    private let noAccess = NoAccessView()
+    /// The folder each tab was refused. Kept apart from the session's failure, which the next
+    /// automatic refresh of the folder still listed clears; it goes with the next navigation.
+    private var deniedFolders: [UUID: URL] = [:]
+    #endif
+    /// The folder the active tab was refused, shown in place of the open one (App Store build).
+    private var deniedFolder: URL? {
+        #if APP_STORE
+        return workspace.activeID.flatMap { deniedFolders[$0] }
+        #else
+        return nil
+        #endif
+    }
     let progress = NSProgressIndicator()
     private(set) var vaultPresentationGeneration = 0
+    #if !APP_STORE
     private var gitReview: GitReviewController?
+    #endif
     private let gitState = GitBrowserState()
     private let gitSummary = ExplorerStyle.label("", color: .secondaryLabelColor)
     var gitSummaryText: String { gitSummary.stringValue }
@@ -124,10 +141,18 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     private let sortButton = ToolbarMenuButton()
     private let viewButton = ToolbarMenuButton()
     private let moreButton = ToolbarMenuButton()
-    private enum SelectionNeed { case any, oneLocal, shareable }
+    private enum SelectionNeed { case any, changeable, oneLocal, shareable }
     private var visibleEntries: [FileEntry] = []
     private var inlineRename: (entry: FileEntry, field: NSTextField)?
     private var contextEntries: [FileEntry] = []
+    /// The context menu of a folder of the tree, with the same commands as the list's.
+    private let treeMenu = NSMenu()
+    /// Whether the folder of `treeMenu` is one of the places at the top of the tree.
+    private var treeMenuIsPlace = false
+    /// Whether the tree, and not the list, was the last of the two to have the keyboard: the
+    /// command bar then acts on the folder selected in the tree.
+    private var treeIsActivePane = false
+    private var firstResponderObservation: NSKeyValueObservation?
     private var renderedTabID: UUID?
     private var renderedPath: String?
     /// The folder last recorded as a recent folder, so that one stay is recorded once.
@@ -148,7 +173,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         self.workspace = workspace
         lastLocation = initialURL
         self.sidebarHome = sidebarHome
-        tree = existingTree ?? FolderTreeController(home: sidebarHome ?? FileManager.default.homeDirectoryForCurrentUser)
+        tree = existingTree ?? FolderTreeController(home: sidebarHome ?? RealHome.url)
         tree.relocalize()
         let window = ExplorerWindow(contentRect: NSRect(x: 0, y: 0, width: 1160, height: 740),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -183,6 +208,23 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             self.forceGitRefresh = true
         }
         tree.onNavigate = { [weak self] url in self?.navigate(.visit(url)) }
+        tree.onSelectionChange = { [weak self] byTree in
+            guard let self, self.workspace.activeTab != nil else { return }
+            // When the tree only follows the list (Back, the address bar), the command bar goes
+            // back to the list: it must not act on the folder the tree moved to on its own.
+            if byTree && !self.treeHasFocus { self.treeIsActivePane = false }
+            self.updateCommandBar()
+        }
+        tree.fileMenuForFolder = { [weak self] entry, isPlace in
+            guard let self else { return nil }
+            self.endInlineRename()
+            self.treeMenuIsPlace = isPlace
+            self.rebuildContextMenu(self.treeMenu, entries: [entry])
+            return self.treeMenu
+        }
+        firstResponderObservation = window.observe(\.firstResponder, options: [.new]) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.keyboardFocusChanged() }
+        }
         tree.canBeFavorite = { [weak self] url in self?.canKeepAsShortcut(url) ?? false }
         systemVolumes.start()
         tree.onDisconnectCloud = { [weak self] id in self?.promptToDisconnect(id) }
@@ -337,7 +379,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         let rename = command(.rename, "command.rename", #selector(renameInList), id: "rename")
         let share = command(.share, "command.share", #selector(shareFiles), id: "share")
         let delete = command(.delete, "command.delete", #selector(trashFiles), id: "delete")
-        selectionButtons = [(cut, .any), (copy, .any), (rename, .oneLocal), (share, .shareable), (delete, .any)]
+        selectionButtons = [(cut, .changeable), (copy, .any), (rename, .oneLocal), (share, .shareable), (delete, .changeable)]
 
         menuButton(sortButton, .sort, "view.sort", id: "explorer.sortMenu")
         for entry in Self.sortItems(target: self) { sortButton.dropMenu.addItem(entry) }
@@ -397,6 +439,8 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
 
         errorLabel.maximumNumberOfLines = 2
         errorLabel.lineBreakMode = .byTruncatingTail
+        // A long path must be cut, never widen the window past the screen.
+        errorLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         errorLabel.isHidden = true
         root.addArrangedSubview(errorLabel)
         errorLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16).isActive = true
@@ -433,6 +477,21 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         gridHeight.priority = NSLayoutConstraint.Priority(999) // a very short window squeezes the strip, not the layout
         message.translatesAutoresizingMaskIntoConstraints = false
         details.addSubview(message)
+        #if APP_STORE
+        noAccess.translatesAutoresizingMaskIntoConstraints = false
+        noAccess.isHidden = true
+        details.addSubview(noAccess)
+        NSLayoutConstraint.activate([
+            noAccess.leadingAnchor.constraint(equalTo: details.leadingAnchor),
+            noAccess.trailingAnchor.constraint(equalTo: details.trailingAnchor),
+            noAccess.topAnchor.constraint(equalTo: details.topAnchor),
+            noAccess.bottomAnchor.constraint(equalTo: details.bottomAnchor)
+        ])
+        noAccess.onGrant = { [weak self] url in
+            guard let self else { return }
+            Task { await SandboxAccess.shared.request(.folder(url), in: self.window) }
+        }
+        #endif
         NSLayoutConstraint.activate([
             gridScroll.leadingAnchor.constraint(equalTo: details.leadingAnchor),
             gridScroll.trailingAnchor.constraint(equalTo: details.trailingAnchor),
@@ -909,7 +968,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     private func presentSearch(saved: ExplorerSavedSearch?) {
         searchWindow?.close()
         let base = session.history.current.url
-        let next = FileSearchController(folder: base.isFileURL ? base : FileManager.default.homeDirectoryForCurrentUser,
+        let next = FileSearchController(folder: base.isFileURL ? base : RealHome.url,
                                         saved: saved, onReveal: { [weak self] url in
             self?.navigate(.visit(url.explorerParent), revealing: url)
         }, onSave: { [weak self] search in
@@ -953,6 +1012,20 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         if !session.blocksInteraction { rememberView() }
         workspace.activeTab?.prepareForUserNavigation()
         if let id = workspace.activeID { restorationFallbackTabs.remove(id); systemVolumes.clearNotice(for: id) }
+        var action = action
+        #if APP_STORE
+        if let id = workspace.activeID, let denied = deniedFolders.removeValue(forKey: id) {
+            // The refused folder is what the window shows, though the history stays on the folder
+            // it came from: Back returns there, Up goes to the refused folder's parent and
+            // Refresh tries the refused folder again.
+            switch action {
+            case .back: action = .reload
+            case .up: action = .visit(denied.deletingLastPathComponent())
+            case .reload: action = .visit(denied)
+            default: break
+            }
+        }
+        #endif
         if file != nil {
             workspace.activeTab?.filterQuery = ""
             filter.stringValue = ""
@@ -1024,21 +1097,39 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         errorLabel.stringValue = L10n.directoryError(session.failure) ?? systemVolumes.notice(for: tab.id) ?? (restoredFallback ? L10n.text("options.restore_unavailable") : "")
         errorLabel.toolTip = errorLabel.stringValue
         errorLabel.isHidden = errorLabel.stringValue.isEmpty
+        #if APP_STORE
+        let deniedBefore = deniedFolders[tab.id]
+        if !session.isLoading {
+            if let failure = session.failure, failure.reason == .permission, failure.path.hasPrefix("/") {
+                deniedFolders[tab.id] = URL(fileURLWithPath: failure.path, isDirectory: true)
+            } else if session.failure == nil, deniedFolders[tab.id]?.explorerIdentity == session.history.current.url.explorerIdentity {
+                deniedFolders[tab.id] = nil
+            }
+        }
+        if let denied = deniedFolders[tab.id] { noAccess.show(denied) } else { noAccess.isHidden = true }
+        // The tabs were drawn before the refusal was known: the active one takes the refused name.
+        if deniedFolders[tab.id] != deniedBefore { renderTabs() }
+        backButton.isEnabled = !session.history.back.isEmpty || deniedFolders[tab.id] != nil
+        upButton.isEnabled = !(deniedFolders[tab.id] ?? session.history.current.url).explorerIsRoot
+        #endif
         tree.setShowHidden(session.showHidden)
         let url = session.history.current.url
-        if changedTab || renderedPath != url.explorerIdentity { addressSuggestions.dismiss() }
+        // A refused folder (App Store build) is what the address, the title, the trail and the tree
+        // show, as in Windows; the list below stays empty.
+        let shown = deniedFolder ?? url
+        if changedTab || renderedPath != shown.explorerIdentity { addressSuggestions.dismiss() }
         let editingAddress = (window?.firstResponder as? NSTextView)?.delegate as? NSTextField === address
-        if changedTab || renderedPath != url.explorerIdentity || !editingAddress { address.stringValue = CloudAccounts.shared.address(for: url) }
-        renderedPath = url.explorerIdentity
-        window?.title = L10n.format("window.title", url.isFileURL ? (url.path == "/" ? L10n.text("tree.computer") : url.lastPathComponent) : CloudAccounts.shared.title(for: url))
+        if changedTab || renderedPath != shown.explorerIdentity || !editingAddress { address.stringValue = CloudAccounts.shared.address(for: shown) }
+        renderedPath = shown.explorerIdentity
+        window?.title = L10n.format("window.title", shown.isFileURL ? (shown.path == "/" ? L10n.text("tree.computer") : shown.lastPathComponent) : CloudAccounts.shared.title(for: shown))
         // No represented URL: with one, AppKit fetches the folder's icon for the title bar on the
         // main thread, and for that the system counts the folder's items. In a huge iCloud folder
         // that held the window back for seconds at every launch, and at times for good.
-        rebuildBreadcrumbs(url)
+        rebuildBreadcrumbs(shown)
         if changedTab || !session.isLoading {
             applyViewMode(viewMode(for: url))
             rebuildRows(selection: session.history.current.selectedPaths, scroll: session.history.current.scrollOffset)
-            tree.show(url)
+            tree.show(shown)
         }
         filter.isEnabled = !session.blocksInteraction
         updatePreviewSelection()
@@ -1076,7 +1167,9 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     private func rebuildRows(selection: Set<String>, scroll: Double? = nil) {
         let query = filter.stringValue
         let nameFilter = NameFilter(query)
-        let entries = session.entries.filter { nameFilter.matches($0.name) }
+        // Under the "no access" panel the list holds nothing: no hidden row of the previous folder
+        // can be selected, counted or acted on.
+        let entries = deniedFolder != nil ? [] : session.entries.filter { nameFilter.matches($0.name) }
         let descriptor = table.sortDescriptors.first
         let localization = L10n.current
         visibleEntries = EntryOrdering.sorted(entries, by: EntrySortKey(rawValue: descriptor?.key ?? "name") ?? .name,
@@ -1161,7 +1254,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     private var trailWidth: CGFloat = 0
     private func refitTrail() {
         guard workspace.activeTab != nil, abs(address.bounds.width - trailWidth) > 1 else { return }
-        rebuildBreadcrumbs(session.history.current.url)
+        rebuildBreadcrumbs(deniedFolder ?? session.history.current.url)
     }
 
     private func updateStatus() {
@@ -1204,11 +1297,15 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     /// The commands of the bar that need a selection are dimmed without one, not hidden: nothing
     /// in the bar changes place.
     private func updateCommandBar() {
-        let blocked = session.blocksInteraction, entries = blocked ? [] : selectedTableEntries()
+        let blocked = session.blocksInteraction
+        let fromTree = treeIsActivePane && tree.selectedFolder != nil
+        let entries = blocked ? [] : fromTree ? treeEntries() : selectedTableEntries()
+        let place = fromTree && tree.selectedFolder?.isPlace == true
         for (button, needs) in selectionButtons {
             switch needs {
             case .any: button.isEnabled = !entries.isEmpty
-            case .oneLocal: button.isEnabled = entries.count == 1 && entries[0].url.isFileURL
+            case .changeable: button.isEnabled = !entries.isEmpty && !place
+            case .oneLocal: button.isEnabled = entries.count == 1 && entries[0].url.isFileURL && !place
             case .shareable: button.isEnabled = !entries.isEmpty && FileSharingController.supports(entries.map(\.url))
             }
         }
@@ -1226,6 +1323,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
 
     @objc func renameInList(_ sender: Any?) {
         guard !session.blocksInteraction else { return }
+        if fromTree(sender) { renameFile(sender); return }
         window?.makeFirstResponder(fileListView)
         renameSelectionInPlace()
     }
@@ -1602,6 +1700,29 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     func syncTreeToOpenFolder() { tree.show(session.history.current.url) }
 
     @objc func refresh(_ sender: Any?) { forceGitRefresh = true; tree.refresh(); navigate(.reload) }
+
+    #if APP_STORE
+    /// A folder was granted or revoked: the tree and every tab that had no access read again; the
+    /// active tab goes to the folder it was refused, or reloads where it is.
+    func folderAccessChanged() {
+        // Refresh first: it forgets collapsed folders, and would cancel the readings retried here.
+        tree.refresh()
+        tree.retryFailures()
+        FolderPresence.shared.recheck()
+        for tab in workspace.tabs {
+            let current = tab.session.history.current.url
+            let denied = deniedFolders[tab.id]
+            var action = NavigationAction.reload
+            if let denied, denied.explorerIdentity != current.explorerIdentity { action = .visit(denied) }
+            if tab.id == workspace.activeID { navigate(action) }
+            else if denied != nil || tab.session.failure != nil {
+                deniedFolders[tab.id] = nil
+                tab.prepareForUserNavigation()
+                tab.session.navigate(action)
+            }
+        }
+    }
+    #endif
     @objc func toggleFileExtensions(_ sender: Any?) {
         ExplorerStyle.preferences.setShowFileExtensions(!ExplorerStyle.preferences.showFileExtensions)
     }
@@ -1737,32 +1858,36 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         default: break
         }
         let entries = commandEntries(menuItem)
+        let changeable = changeableEntries(menuItem)
         let local = entries.allSatisfy { $0.url.isFileURL }
         switch menuItem.action {
         case #selector(undoFileOperation):
             menuItem.title = FileCommands.shared.undoTitle
             return !FileCommands.shared.isBusy && FileCommands.shared.undoKind != nil
-        case #selector(cutFiles): return !session.blocksInteraction && FileCommands.shared.canCut(entries)
+        case #selector(cutFiles): return !session.blocksInteraction && !changeable.isEmpty && FileCommands.shared.canCut(changeable)
         case #selector(compressFiles):
-            return local && !entries.isEmpty && !session.blocksInteraction && !FileCommands.shared.isBusy
-        case #selector(trashFiles): return !entries.isEmpty && !session.blocksInteraction && !FileCommands.shared.isBusy
+            return local && !changeable.isEmpty && !session.blocksInteraction && !FileCommands.shared.isBusy
+        case #selector(trashFiles): return !changeable.isEmpty && !session.blocksInteraction && !FileCommands.shared.isBusy
         case #selector(copyFiles): return !entries.isEmpty && !session.blocksInteraction
         case #selector(editFinderTags): return local && !entries.isEmpty && !session.blocksInteraction
         case #selector(shareFiles): return FileSharingController.supports(entries.map(\.url)) && !session.blocksInteraction
         case #selector(extractText): return !session.blocksInteraction && Self.canExtractText(entries)
         case #selector(batchOCR): return !session.blocksInteraction && Self.canBatchOCR(entries)
-        case #selector(renameFile), #selector(renameInList): return local && entries.count == 1 && !session.blocksInteraction && !FileCommands.shared.isBusy
+        case #selector(renameFile), #selector(renameInList): return local && changeable.count == 1 && !session.blocksInteraction && !FileCommands.shared.isBusy
         case #selector(pasteFiles):
-            guard menuItem.menu === table.menu || acceptsFileListCommands || fromToolbar(menuItem) else { return false }
-            let destination = menuItem.menu === table.menu && entries.count == 1 && entries[0].canNavigate ? entries[0].url : session.history.current.url
+            guard menuItem.menu === table.menu || acceptsFileCommands || fromToolbar(menuItem) || fromTree(menuItem),
+                  let destination = pasteDestination(menuItem) else { return false }
             return FileCommands.shared.canPaste(into: destination) && !session.blocksInteraction && !FileCommands.shared.isBusy
-        case #selector(newFolder): return (menuItem.menu === table.menu || acceptsFileListCommands || fromToolbar(menuItem)) && !session.blocksInteraction && FileCommands.shared.canCreateFolder(in: session.history.current.url)
+        case #selector(newFolder): return (menuItem.menu === table.menu || acceptsFileListCommands || fromToolbar(menuItem)) && !session.blocksInteraction && deniedFolder == nil && FileCommands.shared.canCreateFolder(in: session.history.current.url)
         case #selector(extractFile): return local && entries.count == 1 && !entries[0].isDirectory && entries[0].url.pathExtension.lowercased() == "zip" && !FileCommands.shared.isBusy
         case #selector(properties), #selector(openSelected): return entries.count == 1 && !session.blocksInteraction
         case #selector(openWith): return local && !entries.isEmpty && entries.allSatisfy { !$0.canNavigate }
         case #selector(editWithSuiteEditor(_:)): return !session.blocksInteraction
         case #selector(openSelectedInNewTab): return entries.count == 1 && entries[0].canNavigate
         case #selector(copyPath): return !entries.isEmpty
+        #if !APP_STORE
+        case #selector(protectFolder): return !changeable.isEmpty
+        #endif
         default: return true
         }
     }
@@ -1797,6 +1922,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
                 item("command.paste_files", #selector(pasteFiles), "doc.on.clipboard")
             }
             if contextEntries.count == 1, let entry = contextEntries.first, entry.url.isFileURL {
+                #if !APP_STORE
                 if let vault = entry.secureFolderURL {
                     if secureFolders?.isUnlocked(vault) == true {
                         item("vault.lock_one", #selector(lockVault), "lock")
@@ -1806,6 +1932,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
                 } else if entry.isDirectory && !entry.isSymbolicLink && !entry.isPackage {
                     item("vault.protect", #selector(protectFolder), "lock")
                 }
+                #endif
             }
             item("command.rename", #selector(renameFile), "pencil")
             item(contextEntries.allSatisfy { $0.url.isFileURL } ? "command.trash" : "command.delete", #selector(trashFiles), "trash")
@@ -1854,7 +1981,9 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
                 item("icloud.batch.header_tip", #selector(downloadAllFromICloud), "icloud.and.arrow.down")
             }
         }
+        #if !APP_STORE
         addGitMenu(to: menu, entries: entries)
+        #endif
         ExplorerStyle.configureMenu(menu)
     }
 
@@ -1882,6 +2011,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         FileCommands.shared.open(urls, withApplicationAt: application)
     }
 
+    #if !APP_STORE
     private func addGitMenu(to menu: NSMenu, entries: [FileEntry]) {
         let directory = session.history.current.url
         guard directory.isFileURL, !session.blocksInteraction else { return }
@@ -1941,6 +2071,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             }
         }
     }
+    #endif
 
     private func showVolumeProperties(at url: URL, mount: VolumeMount?) {
         guard let window else { return }
@@ -1969,6 +2100,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         alert.beginSheetModal(for: window) { _ in escape.stop(); query.cancel() }
     }
 
+    #if !APP_STORE
     func showGitMessage(_ message: String) {
         guard let window else { return }
         let alert = NSAlert()
@@ -1976,6 +2108,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         alert.informativeText = message
         alert.beginSheetModal(for: window)
     }
+    #endif
 
     /// File-list shortcuts must never act on its retained selection while the tree or
     /// another control is focused. An explicitly clicked table context menu is separate.
@@ -1984,8 +2117,57 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         return responder === fileListView || (responder as? NSView)?.isDescendant(of: fileListView) == true
     }
 
+    /// Whether the folder tree has the keyboard.
+    var treeHasFocus: Bool { window?.firstResponder === tree.outline }
+
+    /// Whether the file commands of the keyboard and of the menus have something to act on: the
+    /// selection of the list, or the folder of the tree when the tree has the keyboard.
+    var acceptsFileCommands: Bool { acceptsFileListCommands || (treeHasFocus && tree.selectedFolder != nil) }
+
+    private func keyboardFocusChanged() {
+        guard workspace.activeTab != nil, let responder = window?.firstResponder as? NSView else { return }
+        if responder === tree.outline { treeIsActivePane = true }
+        else if responder === fileListView || responder.isDescendant(of: fileListView) { treeIsActivePane = false }
+        else { return }
+        updateCommandBar()
+    }
+
+    /// Whether a command acts on a folder of the tree: from the tree's menu, from the command bar
+    /// after the tree had the keyboard, or from the keyboard and the menus while it has it.
+    private func fromTree(_ sender: Any?) -> Bool {
+        if let item = sender as? NSMenuItem, let menu = item.menu {
+            if menu === treeMenu { return true }
+            if menu === table.menu { return false }
+        }
+        if fromToolbar(sender) { return treeIsActivePane && tree.selectedFolder != nil }
+        return treeHasFocus
+    }
+
+    private func treeEntries() -> [FileEntry] { tree.selectedFolder.map { [$0.entry] } ?? [] }
+
+    /// The items a command that moves, renames or deletes acts on: none for a place at the top of
+    /// the tree, such as the home folder or Documents.
+    private func changeableEntries(_ sender: Any?) -> [FileEntry] {
+        if fromTree(sender) {
+            let place = (sender as? NSMenuItem)?.menu === treeMenu ? treeMenuIsPlace : tree.selectedFolder?.isPlace == true
+            if place { return [] }
+        }
+        return commandEntries(sender)
+    }
+
+    /// Where a paste goes: into the folder of the tree, into a folder clicked in the list, or
+    /// into the folder open in the list.
+    func pasteDestination(_ sender: Any?) -> URL? {
+        let entries = commandEntries(sender)
+        if fromTree(sender) { return entries.first?.url }
+        if (sender as? NSMenuItem)?.menu === table.menu, entries.count == 1, entries[0].canNavigate { return entries[0].url }
+        // Nothing goes into the folder behind the "no access" panel.
+        return deniedFolder == nil ? session.history.current.url : nil
+    }
+
     private func commandEntries(_ sender: Any?) -> [FileEntry] {
-        if let item = sender as? NSMenuItem, item.menu === table.menu { return contextEntries }
+        if let item = sender as? NSMenuItem, item.menu === table.menu || item.menu === treeMenu { return contextEntries }
+        if fromTree(sender) { return treeEntries() }
         if fromToolbar(sender) { return selectedTableEntries() }
         guard acceptsFileListCommands else { return [] }
         return selectedTableEntries()
@@ -1996,7 +2178,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     }
     @objc func cutFiles(_ sender: Any?) {
         guard !session.blocksInteraction else { return }
-        FileCommands.shared.copy(commandEntries(sender), cut: true)
+        FileCommands.shared.copy(changeableEntries(sender), cut: true)
     }
     @objc func copyFiles(_ sender: Any?) { FileCommands.shared.copy(commandEntries(sender), cut: false) }
     static func canExtractText(_ entries: [FileEntry]) -> Bool {
@@ -2047,8 +2229,15 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         let urls = commandEntries(sender).map(\.url)
         guard !session.blocksInteraction, FileSharingController.supports(urls) else { return }
         let row = clickedListRow >= 0 ? clickedListRow : table.selectedRow
-        let view = fileListView
-        let rowRect = viewMode == .details ? (row >= 0 ? table.rect(ofRow: row) : .zero) : (grid.frame(of: row) ?? .zero)
+        var view = fileListView
+        var rowRect = viewMode == .details ? (row >= 0 ? table.rect(ofRow: row) : .zero) : (grid.frame(of: row) ?? .zero)
+        if fromTree(sender) {
+            // From the tree, the sharing menu points at the folder's row there.
+            let outline = tree.outline
+            let treeRow = (sender as? NSMenuItem)?.menu === treeMenu && outline.clickedRow >= 0 ? outline.clickedRow : outline.selectedRow
+            view = outline
+            rowRect = treeRow >= 0 ? outline.rect(ofRow: treeRow) : .zero
+        }
         let anchor = rowRect.intersection(view.visibleRect)
         sharingTask?.cancel()
         sharingTask = Task {
@@ -2065,11 +2254,11 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     }
 
     @objc func pasteFiles(_ sender: Any?) {
-        let entries = commandEntries(sender)
-        let insideFolder = (sender as? NSMenuItem)?.menu === table.menu && entries.count == 1 && entries[0].canNavigate
-        FileCommands.shared.paste(into: insideFolder ? entries[0].url : session.history.current.url)
+        if let destination = pasteDestination(sender) { FileCommands.shared.paste(into: destination) }
     }
-    @objc func moveFilesHere(_ sender: Any?) { FileCommands.shared.paste(into: session.history.current.url, move: true) }
+    @objc func moveFilesHere(_ sender: Any?) {
+        if let destination = pasteDestination(sender) { FileCommands.shared.paste(into: destination, move: true) }
+    }
     @objc func undoFileOperation(_ sender: Any?) { FileCommands.shared.undo() }
     @objc private func completedTableClick() { table.completedClick() }
 
@@ -2155,7 +2344,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         if control === address {
             if command == #selector(NSResponder.cancelOperation(_:)), !textView.hasMarkedText() {
                 addressSuggestions.dismiss()
-                let currentAddress = CloudAccounts.shared.address(for: session.history.current.url)
+                let currentAddress = CloudAccounts.shared.address(for: deniedFolder ?? session.history.current.url)
                 address.stringValue = currentAddress
                 textView.string = currentAddress
                 textView.selectAll(nil)
@@ -2180,16 +2369,26 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         if let field = inlineRename?.field, notification.object as? NSTextField === field { endInlineRename() }
     }
 
-    @objc func renameFile(_ sender: Any?) { if let entry = commandEntries(sender).first { FileCommands.shared.rename(entry) } }
-    @objc func newFolder(_ sender: Any?) { FileCommands.shared.newFolder(in: session.history.current.url) }
-    @objc func trashFiles(_ sender: Any?) { FileCommands.shared.trash(commandEntries(sender)) }
-    @objc func compressFiles(_ sender: Any?) { FileCommands.shared.compress(commandEntries(sender), in: session.history.current.url) }
+    @objc func renameFile(_ sender: Any?) { if let entry = changeableEntries(sender).first { FileCommands.shared.rename(entry) } }
+    @objc func newFolder(_ sender: Any?) { if deniedFolder == nil { FileCommands.shared.newFolder(in: session.history.current.url) } }
+    @objc func trashFiles(_ sender: Any?) { FileCommands.shared.trash(changeableEntries(sender)) }
+    @objc func compressFiles(_ sender: Any?) {
+        let entries = changeableEntries(sender)
+        // A folder of the tree is compressed next to itself, not inside the folder open in the list.
+        let destination = fromTree(sender) ? entries.first?.url.deletingLastPathComponent() : session.history.current.url
+        if let destination { FileCommands.shared.compress(entries, in: destination) }
+    }
     @objc func extractFile(_ sender: Any?) { if let entry = commandEntries(sender).first { FileCommands.shared.extract(entry, in: session.history.current.url) } }
     @objc func properties(_ sender: Any?) { if let entry = commandEntries(sender).first { FileCommands.shared.properties(entry) } }
     @objc private func openWith(_ sender: Any?) { FileCommands.shared.openWith(commandEntries(sender)) }
     /// Takes items that were just deleted out of the lists at once, where they stand; the reading
     /// of the folder that follows confirms it.
     func itemsRemoved(_ ids: Set<String>) {
+        // A folder deleted from the tree may be the one open in the list, or hold it: the list
+        // goes to the folder above it.
+        if let gone = Self.ancestor(of: session.history.current.url, among: ids) {
+            navigate(.visit(gone.deletingLastPathComponent()))
+        }
         for tab in workspace.tabs where tab.id != workspace.activeID { tab.session.forget(ids) }
         guard session.forget(ids) else { return }
         let rows = IndexSet(visibleEntries.indices.filter { ids.contains(visibleEntries[$0].id) })
@@ -2223,7 +2422,26 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         return true
     }
 
+    /// The folder, `url` itself or one above it, whose identity is among `ids`.
+    static func ancestor(of url: URL, among ids: Set<String>) -> URL? {
+        guard url.isFileURL else { return nil }
+        var item = url.standardizedFileURL
+        while item.path != "/", item.pathComponents.count > 1 {
+            if ids.contains(item.explorerIdentity) { return item }
+            item = item.deletingLastPathComponent()
+        }
+        return nil
+    }
+
     func itemRenamed(_ entry: FileEntry, to name: String) {
+        // A folder renamed from the tree may be the one open in the list, or hold it: the list
+        // follows it to its new name.
+        let current = session.history.current.url
+        if let old = Self.ancestor(of: current, among: [entry.id]) {
+            let rest = String(current.standardizedFileURL.path.dropFirst(old.path.count))
+            let renamedPath = old.deletingLastPathComponent().appendingPathComponent(name).path + rest
+            navigate(.visit(URL(fileURLWithPath: renamedPath, isDirectory: true)))
+        }
         let renamed = entry.renamed(to: name)
         for tab in workspace.tabs where tab.id != workspace.activeID { tab.session.replace(entry.id, with: renamed) }
         guard !session.blocksInteraction, session.replace(entry.id, with: renamed) else { return }
@@ -2239,6 +2457,25 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     func operationFinished(urls: [URL], tabID: UUID?, refreshing directories: Set<String> = []) {
         if trashBrowser?.window?.isVisible == true { trashBrowser?.refresh() }
         tree.refresh()
+        // The folder open in the list may have been moved away (cut from the tree and pasted
+        // elsewhere, an undo): the list goes to the nearest folder above it that is still there.
+        // Asked away from the main thread: a network volume that stopped answering must not hold
+        // the window back.
+        let open = session.history.current.url
+        if open.isFileURL {
+            let tabID = workspace.activeID
+            Task { [weak self] in
+                let above = await Task.detached(priority: .userInitiated) { () -> URL? in
+                    guard !FileManager.default.fileExists(atPath: open.path) else { return nil }
+                    var above = open.standardizedFileURL.deletingLastPathComponent()
+                    while above.pathComponents.count > 1, !FileManager.default.fileExists(atPath: above.path) { above.deleteLastPathComponent() }
+                    return above
+                }.value
+                guard let self, let above, self.workspace.activeID == tabID,
+                      self.session.history.current.url.explorerIdentity == open.explorerIdentity else { return }
+                self.navigate(.visit(above))
+            }
+        }
         for tab in workspace.tabs where tab.id != workspace.activeID && !tab.pendingInitialLoad &&
             directories.contains(tab.session.history.current.url.explorerIdentity) && !tab.session.isLoading {
             tab.session.navigate(.reload)
@@ -2324,6 +2561,11 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
 
     @objc func openSelected(_ sender: Any?) {
         guard !session.blocksInteraction else { return }
+        if fromTree(sender) {
+            guard let entry = commandEntries(sender).first else { return }
+            if let vault = entry.secureFolderURL { secureFolders?.unlock(vault) } else { navigate(.visit(entry.url)) }
+            return
+        }
         let row = sender is NSMenuItem && clickedListRow >= 0 ? clickedListRow : table.selectedRow
         guard visibleEntries.indices.contains(row) else { return }
         let entry = visibleEntries[row]
@@ -2344,6 +2586,10 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
 
     @objc func openSelectedInNewTab(_ sender: Any?) {
         guard !session.blocksInteraction else { return }
+        if fromTree(sender) {
+            if let entry = commandEntries(sender).first, entry.canNavigate { addTab(at: entry.url) }
+            return
+        }
         let row = sender is NSMenuItem && clickedListRow >= 0 ? clickedListRow : table.selectedRow
         guard visibleEntries.indices.contains(row), visibleEntries[row].canNavigate else { return }
         addTab(at: visibleEntries[row].url)
@@ -2384,7 +2630,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
                 try CloudAccounts.shared.remove(id)
                 let affected = self.workspace.tabs.filter { RemoteLocation.parse($0.session.history.current.url)?.connectionID == id }
                 if !affected.isEmpty && affected.count == self.workspace.tabs.count {
-                    self.addTab(at: self.sidebarHome ?? FileManager.default.homeDirectoryForCurrentUser)
+                    self.addTab(at: self.sidebarHome ?? RealHome.url)
                 }
                 for tab in affected { self.closeTab(id: tab.id) }
                 for tab in self.workspace.tabs { tab.session.forgetCloudHistory(id) }
@@ -2441,7 +2687,10 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         for view in tabStrip.arrangedSubviews { tabStrip.removeArrangedSubview(view); view.removeFromSuperview() }
         var selectedSurface: NSView?
         for tab in workspace.tabs {
-            let url = tab.session.history.current.url
+            var url = tab.session.history.current.url
+            #if APP_STORE
+            if let denied = deniedFolders[tab.id] { url = denied }
+            #endif
             let title = url.isFileURL ? (url.path == "/" ? L10n.text("tree.computer") : url.lastPathComponent) : CloudAccounts.shared.title(for: url)
             let select = TabActionButton(title: title, target: self, action: #selector(tabSelected))
             select.tabID = tab.id; select.isBordered = false
@@ -2480,6 +2729,13 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
 
     @objc func copyPath(_ sender: Any?) {
         guard !session.blocksInteraction else { return }
+        if fromTree(sender) {
+            let paths = commandEntries(sender).map { CloudAccounts.shared.address(for: $0.url) }
+            guard !paths.isEmpty else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(paths.joined(separator: "\n"), forType: .string)
+            return
+        }
         var indexes = table.selectedRowIndexes
         if sender is NSMenuItem, clickedListRow >= 0, !indexes.contains(clickedListRow) {
             indexes = IndexSet(integer: clickedListRow)
@@ -2547,14 +2803,14 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             // Leave other editing commands, including input-method composition, to AppKit.
             if editor != nil { return event }
             if flags == [.command, .option] && key == "v" {
-                if self.acceptsFileListCommands { self.moveFilesHere(nil) }
+                if self.acceptsFileCommands { self.moveFilesHere(nil) }
                 return nil
             }
             if flags == .command || flags == .control {
                 if key == "z" { FileCommands.shared.undo(); return nil }
-                if key == "c" { if self.acceptsFileListCommands { self.copyFiles(nil) }; return nil }
-                if key == "x" { if self.acceptsFileListCommands { self.cutFiles(nil) }; return nil }
-                if key == "v" { if self.acceptsFileListCommands { self.pasteFiles(nil) }; return nil }
+                if key == "c" { if self.acceptsFileCommands { self.copyFiles(nil) }; return nil }
+                if key == "x" { if self.acceptsFileCommands { self.cutFiles(nil) }; return nil }
+                if key == "v" { if self.acceptsFileCommands { self.pasteFiles(nil) }; return nil }
             }
             // After a deletion nothing is selected; the arrows go on from where the item was,
             // not from the top of the list: down takes what stood below it, up what stood above.
@@ -2573,11 +2829,12 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
                 }
             }
             if event.keyCode == 120 && flags.isEmpty {
-                if self.acceptsFileListCommands { self.renameSelectionInPlace() }
+                if self.treeHasFocus { self.renameFile(nil) }
+                else if self.acceptsFileListCommands { self.renameSelectionInPlace() }
                 return nil
             }
             if event.keyCode == 117 && flags.isEmpty {
-                if self.acceptsFileListCommands { self.trashFiles(nil) }
+                if self.acceptsFileCommands { self.trashFiles(nil) }
                 return nil
             }
             if flags == .option {
@@ -2597,7 +2854,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             }
             if flags == .control, key == "r" { self.refresh(nil); return nil }
             if flags == .option, event.keyCode == 36 || event.keyCode == 76 {
-                if self.acceptsFileListCommands { self.properties(nil) }
+                if self.acceptsFileCommands { self.properties(nil) }
                 return nil
             }
             // Command+A too: the App Shortcuts of the system can take it away from the menu.
@@ -2609,8 +2866,9 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         }
     }
 
+    #if !APP_STORE
     @objc private func protectFolder(_ sender: NSMenuItem) {
-        if let url = commandEntries(sender).first?.url { secureFolders?.protect(url) }
+        if let url = changeableEntries(sender).first?.url { secureFolders?.protect(url) }
     }
 
     @objc private func unlockVault(_ sender: NSMenuItem) {
@@ -2624,6 +2882,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     @objc private func resetVault(_ sender: NSMenuItem) {
         if let url = commandEntries(sender).first?.secureFolderURL { secureFolders?.reset(url) }
     }
+    #endif
 
     func concealSecureFolders(_ roots: [URL]) {
         searchWindow?.close(); searchWindow = nil
@@ -2633,10 +2892,12 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
                 window?.endSheet(sheet, returnCode: .cancel)
             }
         }
+        #if !APP_STORE
         if let review = gitReview, roots.contains(where: { SecureFolderCommands.contains(review.repositoryRoot, in: $0) }) {
             review.close()
             gitReview = nil
         }
+        #endif
         let affected = workspace.tabs.filter { tab in
             if tab.session.isLoading { return true }
             let history = tab.session.history
@@ -2647,7 +2908,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         if !affected.isEmpty {
             window?.makeFirstResponder(fileListView)
             if affected.count == workspace.tabs.count {
-                workspace.addTab(at: sidebarHome ?? FileManager.default.homeDirectoryForCurrentUser)
+                workspace.addTab(at: sidebarHome ?? RealHome.url)
             }
             for tab in affected { workspace.close(tab.id) }
         }
@@ -2663,7 +2924,9 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         trashBrowser?.close(); trashBrowser = nil
         systemVolumes.stop()
         addressSuggestions.dismiss()
+        #if !APP_STORE
         gitReview?.close()
+        #endif
         gitState.stop()
         savePresentation()
         restoringLayout = true // The retired window must not overwrite its replacement.

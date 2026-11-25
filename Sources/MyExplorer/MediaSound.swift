@@ -17,7 +17,9 @@ enum MediaSound {
     /// Saves every change the person makes with the player's own controls. The caller keeps the
     /// observations for as long as the player is on screen.
     static func follow(_ player: AVPlayer, defaults: UserDefaults = .standard) -> [NSKeyValueObservation] {
-        [player.observe(\.isMuted, options: [.new]) { player, _ in defaults.set(player.isMuted, forKey: mutedKey) },
+        // UserDefaults is safe to use from any thread; the SDK does not mark it Sendable.
+        nonisolated(unsafe) let defaults = defaults
+        return [player.observe(\.isMuted, options: [.new]) { player, _ in defaults.set(player.isMuted, forKey: mutedKey) },
          player.observe(\.volume, options: [.new]) { player, _ in defaults.set(Double(player.volume), forKey: volumeKey) }]
     }
 }

@@ -8,7 +8,11 @@ let package = Package(
     products: [
         .executable(name: "MyExplorerApp", targets: ["MyExplorer"]),
         .executable(name: "myexplorer", targets: ["ExplorerCLI"]),
-        .library(name: "ExplorerCore", targets: ["ExplorerCore"])
+        .library(name: "ExplorerCore", targets: ["ExplorerCore"]),
+        // The App Store build (MyExplorer.xcodeproj) compiles Sources/MyExplorer itself and links these.
+        .library(name: "ExplorerClipboard", targets: ["ExplorerClipboard"]),
+        .library(name: "ExplorerLocalization", targets: ["ExplorerLocalization"]),
+        .library(name: "ExplorerAutomation", targets: ["ExplorerAutomation"])
     ],
     targets: [
         .target(name: "CArchive", exclude: ["README.md"], publicHeadersPath: "include", linkerSettings: [.linkedLibrary("archive")]),

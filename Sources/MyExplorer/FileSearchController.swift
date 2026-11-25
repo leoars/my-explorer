@@ -146,6 +146,14 @@ final class FileSearchController: DialogWindowController, NSTableViewDataSource,
         active = criteria
         saveButton.isEnabled = true
         cancelButton.isEnabled = true
+        #if APP_STORE
+        // In the sandbox a folder without access finds nothing, in Spotlight or walking it: say why.
+        if criteria.scope != .computer, !Self.canOpen(folder) {
+            status.stringValue = L10n.text("access.search_denied")
+            cancelButton.isEnabled = false
+            return
+        }
+        #endif
         status.stringValue = L10n.text("search.running")
         if criteria.scope == .walkFolder {
             subtreeWatcher.watch(folder) { [weak self] in self?.scheduleRescan() }
@@ -165,6 +173,14 @@ final class FileSearchController: DialogWindowController, NSTableViewDataSource,
             status.stringValue = L10n.text("search.index_hint")
         }
     }
+
+    #if APP_STORE
+    private static func canOpen(_ folder: URL) -> Bool {
+        guard let directory = opendir(folder.path) else { return false }
+        closedir(directory)
+        return true
+    }
+    #endif
 
     private func scheduleRescan() {
         guard active?.scope == .walkFolder else { return }
@@ -274,6 +290,7 @@ final class FileSearchController: DialogWindowController, NSTableViewDataSource,
         }
     }
 
+    #if !APP_STORE
     static func smoke(root: URL) async throws {
         let fm = FileManager.default
         let area = root.appendingPathComponent("Search-" + UUID().uuidString, isDirectory: true)
@@ -309,6 +326,7 @@ final class FileSearchController: DialogWindowController, NSTableViewDataSource,
         search.revealButton.performClick(nil)
         guard revealed == target else { throw SmokeFailure.failed("Wrong result with duplicate file names") }
     }
+    #endif
 
     @objc private func reveal() {
         guard rows.indices.contains(table.selectedRow) else { return }

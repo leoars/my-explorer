@@ -31,11 +31,20 @@ public struct VolumeMount: Equatable, Sendable {
     private static func mountStats(at url: URL) throws -> statfs {
         try DirectoryReader.validateLocalURL(url)
         let resolved = url.resolvingSymlinksInPath().standardizedFileURL
-        let descriptor = open(resolved.path, O_EVTONLY | O_DIRECTORY | O_CLOEXEC)
-        guard descriptor >= 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
-        defer { close(descriptor) }
         var stats = statfs()
-        guard fstatfs(descriptor, &stats) == 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
+        let descriptor = open(resolved.path, O_EVTONLY | O_DIRECTORY | O_CLOEXEC)
+        if descriptor >= 0 {
+            defer { close(descriptor) }
+            guard fstatfs(descriptor, &stats) == 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
+        } else {
+            // The App Sandbox refuses to open a volume no granted folder covers, yet still answers
+            // for its metadata: ejecting and the capacity need nothing more. The mount check below
+            // still ties the answer to this path.
+            let code = errno
+            guard code == EPERM || code == EACCES, statfs(resolved.path, &stats) == 0 else {
+                throw POSIXError(.init(rawValue: code) ?? .EIO)
+            }
+        }
         let mountPath = withUnsafeBytes(of: stats.f_mntonname) { buffer in
             String(decoding: buffer.prefix { $0 != 0 }, as: UTF8.self)
         }

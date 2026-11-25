@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#if !APP_STORE
 import AppKit
 import ExplorerAutomation
 import ExplorerCore
@@ -105,3 +106,4 @@ final class AutomationSettingsController: DialogWindowController {
         }
     }
 }
+#endif

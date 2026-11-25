@@ -14,6 +14,14 @@ final class TrashBrowserController: DialogWindowController, NSTableViewDataSourc
     private var working = false
     private var failures: [String] = []
     private var watchers: [URL: DirectoryWatcher] = [:]
+    #if APP_STORE
+    /// Why the Trash folder cannot be listed in the App Store build, with the way to allow it. It
+    /// stays in the window and never asks on its own (docs/APP-STORE.md, decision 4).
+    private let accessNotice = NSTextField(wrappingLabelWithString: "")
+    private let accessSettings = NSButton()
+    private let accessDisk = NSButton()
+    private lazy var accessBox = NSStackView(views: [accessNotice, NSStackView(views: [accessSettings, accessDisk])])
+    #endif
 
     init() {
         let panel = NSWindow(contentRect: .init(x: 0, y: 0, width: 820, height: 430),
@@ -44,6 +52,22 @@ final class TrashBrowserController: DialogWindowController, NSTableViewDataSourc
         let commands = NSStackView(views: [restore, choose, erase])
         let footer = NSStackView(views: [refresh, NSView(), empty])
         let stack = NSStackView(views: [commands, scroll, status, footer])
+        #if APP_STORE
+        accessNotice.textColor = .secondaryLabelColor
+        accessNotice.maximumNumberOfLines = 0
+        accessNotice.setAccessibilityIdentifier("trash.accessNotice")
+        for (button, key, action, id) in [(accessSettings, "access.open_settings", #selector(openFullDiskAccess), "trash.openSettings"),
+                                          (accessDisk, "access.allow_disk", #selector(allowDisk), "trash.allowDisk")] {
+            button.title = L10n.text(key); button.target = self; button.action = action; button.bezelStyle = .rounded
+            button.setAccessibilityIdentifier(id)
+        }
+        accessBox.orientation = .vertical
+        accessBox.alignment = .leading
+        accessBox.spacing = 8
+        accessBox.isHidden = true
+        stack.insertArrangedSubview(accessBox, at: 1)
+        accessBox.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        #endif
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
         stack.translatesAutoresizingMaskIntoConstraints = false
         let content = panel.contentView!
@@ -102,6 +126,10 @@ final class TrashBrowserController: DialogWindowController, NSTableViewDataSourc
                 let count = L10n.format("trash.count", String(list.entries.count))
                 self.status.stringValue = list.unreadable.isEmpty ? count : count + " · " + L10n.text("trash.restricted")
                 self.status.toolTip = list.unreadable.map(\.path).joined(separator: "\n")
+                #if APP_STORE
+                let home = RealHome.url.appendingPathComponent(".Trash", isDirectory: true)
+                self.showAccessNotice(list.unreadable.contains { $0.standardizedFileURL.path == home.standardizedFileURL.path }, trash: home)
+                #endif
                 self.load = nil; self.updateButtons()
             } catch {
                 guard !Task.isCancelled, let self else { return }
@@ -111,6 +139,24 @@ final class TrashBrowserController: DialogWindowController, NSTableViewDataSourc
         }
         updateButtons()
     }
+
+    #if APP_STORE
+    /// The Trash folder is protected by macOS privacy: even with the disk granted, listing it takes
+    /// Full Disk Access. Without it the window still lists and restores what this app moved there.
+    private func showAccessNotice(_ refused: Bool, trash: URL) {
+        guard refused else { accessBox.isHidden = true; return }
+        let covered = SandboxAccess.shared.covers(trash)
+        accessNotice.stringValue = L10n.text(covered ? "trash.fda.detail" : "trash.fda.grant")
+        accessDisk.isHidden = covered
+        accessBox.isHidden = false
+    }
+    @objc private func openFullDiskAccess() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") { NSWorkspace.shared.open(url) }
+    }
+    @objc private func allowDisk() {
+        Task { await SandboxAccess.shared.request(.disk, in: window); refresh() }
+    }
+    #endif
 
     func numberOfRows(in tableView: NSTableView) -> Int { entries.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
