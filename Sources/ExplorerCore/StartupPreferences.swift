@@ -63,6 +63,8 @@ public final class StartupPreferences {
             // Specifying isDirectory avoids Foundation's optional directory-type probe.
             return URL(fileURLWithPath: "/" + normalized.joined(separator: "/"), isDirectory: true)
         }
+        // The favorites and the recent folders opened as a place of the list.
+        if let group = FolderShortcutGroup(url: url) { return group.url }
         guard url.scheme == RemoteLocation.scheme,
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
         if (components.host == nil || components.host == ""), components.path == "/" {

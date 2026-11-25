@@ -630,6 +630,8 @@
 "tree.recents" = "Recentes";
 "favorites.add" = "Adicionar às preferidas";
 "favorites.remove" = "Remover das preferidas";
+"favorites.empty" = "Nenhuma pasta preferida. Use Adicionar às preferidas no menu de uma pasta ou arraste pastas para Preferidas na árvore.";
+"recents.empty" = "Nenhuma pasta aberta recentemente.";
 "favorites.add_current" = "Adicionar esta pasta";
 "favorites.remove_current" = "Remover esta pasta";
 "menu.favorite_folders" = "Pastas preferidas";

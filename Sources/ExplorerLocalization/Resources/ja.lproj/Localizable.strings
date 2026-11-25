@@ -630,6 +630,8 @@
 "tree.recents" = "最近使ったフォルダ";
 "favorites.add" = "よく使うフォルダに追加";
 "favorites.remove" = "よく使うフォルダから削除";
+"favorites.empty" = "よく使うフォルダはありません。フォルダのメニューで「よく使うフォルダに追加」を選ぶか、ツリーの「よく使うフォルダ」にフォルダをドラッグしてください。";
+"recents.empty" = "最近開いたフォルダはありません。";
 "favorites.add_current" = "このフォルダを追加";
 "favorites.remove_current" = "このフォルダを削除";
 "menu.favorite_folders" = "よく使うフォルダ";

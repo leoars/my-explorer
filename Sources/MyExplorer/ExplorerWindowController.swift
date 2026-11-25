@@ -142,7 +142,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     private let viewButton = ToolbarMenuButton()
     private let moreButton = ToolbarMenuButton()
     private enum SelectionNeed { case any, changeable, oneLocal, shareable }
-    private var visibleEntries: [FileEntry] = []
+    private(set) var visibleEntries: [FileEntry] = []
     private var inlineRename: (entry: FileEntry, field: NSTextField)?
     private var contextEntries: [FileEntry] = []
     /// The context menu of a folder of the tree, with the same commands as the list's.
@@ -239,6 +239,8 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             self.tree.show(self.session.history.current.url)
         }
         tree.onManageCloud = { [weak self] in self?.onManageCloud?() }
+        NotificationCenter.default.addObserver(self, selector: #selector(shortcutGroupsChanged), name: FolderShortcuts.didChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(shortcutGroupsChanged), name: FolderPresence.didChange, object: nil)
         previewPane.onExtractText = { [weak self] url in self?.onExtractText?(url) }
         previewPane.onRevealFile = { [weak self] url in self?.revealFromPreview(url) }
         table.openSelection = { [weak self] in self?.openSelected(nil) }
@@ -991,6 +993,40 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         return FolderShortcuts.folderExists(url)
     }
 
+    /// The favorites or the recent folders, when one of the two groups is open in the list.
+    /// Safe without a tab: the list can still draw rows while the last tab closes.
+    private var shortcutGroup: FolderShortcutGroup? {
+        (workspace.activeTab?.session.history.current.url).flatMap(FolderShortcutGroup.init(url:))
+    }
+
+    /// Whether the place open in the list is a folder that can hold items: false for the groups
+    /// of the tree opened as a list (the favorites, the recent folders, the cloud connections).
+    private var locationHoldsItems: Bool {
+        guard let url = workspace.activeTab?.session.history.current.url else { return false }
+        return url.isFileURL || RemoteLocation.parse(url) != nil
+    }
+
+    /// Whether the favorites or the recent folders open in the list hold, among `entries`, one of
+    /// the places at the top of the tree: as in the tree's groups, it can be copied and looked at,
+    /// but not cut, renamed, deleted or compressed from there.
+    private func listHoldsPlace(_ entries: [FileEntry]) -> Bool {
+        shortcutGroup != nil && entries.contains { tree.isPlace($0.url) }
+    }
+
+    /// A favorite whose folder is gone, listed among the favorites: faded, as in the tree.
+    private func isMissingFavorite(_ entry: FileEntry) -> Bool {
+        shortcutGroup == .favorites && !FolderPresence.shared.exists(entry.url)
+    }
+
+    /// The favorites or the recent folders changed, or a folder of theirs came or went: every tab
+    /// that shows one of the two groups reads it again, keeping its selection.
+    @objc private func shortcutGroupsChanged(_ notification: Notification) {
+        if notification.name == FolderShortcuts.didChange, notification.object as AnyObject? !== ExplorerStyle.folderShortcuts { return }
+        for tab in workspace.tabs where !tab.pendingInitialLoad && FolderShortcutGroup(url: tab.session.history.current.url) != nil {
+            tab.session.refreshKeepingView()
+        }
+    }
+
     /// Adds the folder open in the list to the favorites, or takes it out.
     @objc func toggleCurrentFolderFavorite(_ sender: Any?) {
         let url = session.history.current.url
@@ -1085,7 +1121,9 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         renderedTabID = tab.id
         rendering = true
         filter.stringValue = tab.filterQuery
-        table.sortDescriptors = [NSSortDescriptor(key: tab.sortKey.rawValue, ascending: tab.sortAscending)]
+        // The favorites and the recent folders keep the group's order, as in the tree: no column sorts them.
+        table.sortDescriptors = FolderShortcutGroup(url: tab.session.history.current.url) == nil
+            ? [NSSortDescriptor(key: tab.sortKey.rawValue, ascending: tab.sortAscending)] : []
         rendering = false
         backButton.isEnabled = !session.history.back.isEmpty
         forwardButton.isEnabled = !session.history.forward.isEmpty
@@ -1172,8 +1210,9 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         let entries = deniedFolder != nil ? [] : session.entries.filter { nameFilter.matches($0.name) }
         let descriptor = table.sortDescriptors.first
         let localization = L10n.current
-        visibleEntries = EntryOrdering.sorted(entries, by: EntrySortKey(rawValue: descriptor?.key ?? "name") ?? .name,
-                                              ascending: descriptor?.ascending ?? true, kindName: localization.fileKind)
+        visibleEntries = shortcutGroup != nil ? entries
+            : EntryOrdering.sorted(entries, by: EntrySortKey(rawValue: descriptor?.key ?? "name") ?? .name,
+                                   ascending: descriptor?.ascending ?? true, kindName: localization.fileKind)
         if !cloudDownloaded.isEmpty {
             // Kept only for items of this folder that the listing has not caught up with.
             let pending = Set(session.entries.lazy.filter { $0.iCloudAvailability != nil && $0.iCloudAvailability != .available }.map(\.url.path))
@@ -1200,7 +1239,8 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         positionRenameField()
         let location = session.history.current.url
         let cloudOverview = location.scheme == RemoteLocation.scheme && (location.host == nil || location.host == "")
-        message.stringValue = query.isEmpty ? L10n.text(cloudOverview ? "cloud.empty" : "empty.folder") : L10n.text("empty.filter")
+        let emptyKey = cloudOverview ? "cloud.empty" : shortcutGroup.map { $0 == .favorites ? "favorites.empty" : "recents.empty" } ?? "empty.folder"
+        message.stringValue = query.isEmpty ? L10n.text(emptyKey) : L10n.text("empty.filter")
         message.isHidden = !visibleEntries.isEmpty || session.errorMessage != nil
         updateStatus()
     }
@@ -1300,7 +1340,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         let blocked = session.blocksInteraction
         let fromTree = treeIsActivePane && tree.selectedFolder != nil
         let entries = blocked ? [] : fromTree ? treeEntries() : selectedTableEntries()
-        let place = fromTree && tree.selectedFolder?.isPlace == true
+        let place = fromTree ? tree.selectedFolder?.isPlace == true : listHoldsPlace(entries)
         for (button, needs) in selectionButtons {
             switch needs {
             case .any: button.isEnabled = !entries.isEmpty
@@ -1309,9 +1349,9 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             case .shareable: button.isEnabled = !entries.isEmpty && FileSharingController.supports(entries.map(\.url))
             }
         }
-        pasteButton.isEnabled = !blocked
+        pasteButton.isEnabled = !blocked && (fromTree || locationHoldsItems)
         newButton.isEnabled = !blocked
-        sortButton.isEnabled = !blocked
+        sortButton.isEnabled = !blocked && shortcutGroup == nil
     }
 
     /// The trail of folders shows while the address is not being edited; the text of the field
@@ -1537,6 +1577,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         cell.label.isHidden = inlineRename?.entry.id == entry.id
         cell.label.stringValue = entry.displayName(showExtensions: ExplorerStyle.preferences.showFileExtensions)
         cell.label.font = ExplorerStyle.font(.files)
+        cell.alphaValue = isMissingFavorite(entry) ? 0.45 : 1
         FileTypeIcon.configure(cell, for: entry, side: metrics.icon)
         GitDecoration.apply(to: cell, url: entry.url, directory: entry.canNavigate,
             snapshot: gitState.snapshot, roots: gitState.repositoryRootPaths, baseTooltip: CloudAccounts.shared.address(for: entry.url))
@@ -1635,6 +1676,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             cell.label.isHidden = inlineRename?.entry.id == entry.id
             cell.label.stringValue = entry.displayName(showExtensions: ExplorerStyle.preferences.showFileExtensions)
             cell.label.font = ExplorerStyle.font(.files)
+            cell.alphaValue = isMissingFavorite(entry) ? 0.45 : 1
             FileTypeIcon.configure(cell, for: entry, rowHeight: tableView.rowHeight)
             GitDecoration.apply(to: cell, url: entry.url, directory: entry.canNavigate,
                 snapshot: gitState.snapshot, roots: gitState.repositoryRootPaths, baseTooltip: CloudAccounts.shared.address(for: entry.url))
@@ -1652,6 +1694,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         cell.identifier = column.identifier
         cell.font = ExplorerStyle.font(.files)
         cell.textColor = .secondaryLabelColor
+        cell.alphaValue = isMissingFavorite(entry) ? 0.45 : 1
         switch column.identifier.rawValue {
         case "modified": cell.stringValue = entry.modified.map { L10n.current.date($0) } ?? "—"
         case "kind": cell.stringValue = L10n.current.fileKind(entry)
@@ -1665,6 +1708,10 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
 
     func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
         guard !rendering, let tab = workspace.activeTab else { return }
+        if shortcutGroup != nil {
+            rendering = true; table.sortDescriptors = []; rendering = false
+            return
+        }
         tab.sortKey = EntrySortKey(rawValue: table.sortDescriptors.first?.key ?? "name") ?? .name
         tab.sortAscending = table.sortDescriptors.first?.ascending ?? true
         if !restoringLayout {
@@ -1851,10 +1898,10 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             return true
         case #selector(sortByColumn(_:)):
             menuItem.state = menuItem.representedObject as? String == table.sortDescriptors.first?.key ? .on : .off
-            return !session.blocksInteraction
+            return !session.blocksInteraction && shortcutGroup == nil
         case #selector(sortInDirection(_:)):
-            menuItem.state = (menuItem.tag == 1) == (table.sortDescriptors.first?.ascending ?? true) ? .on : .off
-            return !session.blocksInteraction
+            menuItem.state = shortcutGroup == nil && (menuItem.tag == 1) == (table.sortDescriptors.first?.ascending ?? true) ? .on : .off
+            return !session.blocksInteraction && shortcutGroup == nil
         default: break
         }
         let entries = commandEntries(menuItem)
@@ -1913,6 +1960,13 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             entry.target = self
             entry.image = ExplorerStyle.symbol(symbol, description: entry.title)
         }
+        // A favorite whose folder is gone can only be taken out of the favorites, as in the tree.
+        if shortcutGroup == .favorites, contextEntries.count == 1, ExplorerStyle.folderShortcuts.isFavorite(contextEntries[0].url),
+           !FolderPresence.shared.exists(contextEntries[0].url) {
+            item("favorites.remove", #selector(toggleFavoriteEntry), "star.slash")
+            ExplorerStyle.configureMenu(menu)
+            return
+        }
         if !contextEntries.isEmpty {
             item("command.cut_files", #selector(cutFiles), "scissors")
             item("command.copy_files", #selector(copyFiles), "doc.on.doc")
@@ -1940,7 +1994,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             item(contextEntries.count == 1 && !contextEntries[0].url.isFileURL && !contextEntries[0].canNavigate ? "cloud.open_copy" : "command.open", #selector(openSelected), "arrow.up.forward.square")
             item("command.open_new_tab", #selector(openSelectedInNewTab), "plus.square.on.square")
             if contextEntries.count == 1, let entry = contextEntries.first, entry.isDirectory, !entry.isPackage,
-               entry.secureFolderURL == nil, canKeepAsShortcut(entry.url) {
+               entry.secureFolderURL == nil, canKeepAsShortcut(entry.url) || ExplorerStyle.folderShortcuts.isFavorite(entry.url) {
                 let favorite = ExplorerStyle.folderShortcuts.isFavorite(entry.url)
                 item(favorite ? "favorites.remove" : "favorites.add", #selector(toggleFavoriteEntry), favorite ? "star.slash" : "star")
             }
@@ -2151,8 +2205,10 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         if fromTree(sender) {
             let place = (sender as? NSMenuItem)?.menu === treeMenu ? treeMenuIsPlace : tree.selectedFolder?.isPlace == true
             if place { return [] }
+            return commandEntries(sender)
         }
-        return commandEntries(sender)
+        let entries = commandEntries(sender)
+        return listHoldsPlace(entries) ? [] : entries
     }
 
     /// Where a paste goes: into the folder of the tree, into a folder clicked in the list, or
@@ -2275,7 +2331,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         let row = clicked ?? table.row(at: point)
         guard row >= 0, table.selectedRowIndexes == IndexSet(integer: row),
               visibleEntries.indices.contains(row), let cell = nameCell(at: row),
-              visibleEntries[row].url.isFileURL else { return nil }
+              visibleEntries[row].url.isFileURL, !listHoldsPlace([visibleEntries[row]]) else { return nil }
         let label = cell.label
         var textRect = label.bounds
         textRect.size.width = min(textRect.width, label.intrinsicContentSize.width)
@@ -2297,7 +2353,7 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     private func renameSelectionInPlace() {
         let row = table.selectedRow
         guard table.numberOfSelectedRows == 1, visibleEntries.indices.contains(row), visibleEntries[row].url.isFileURL,
-              window?.attachedSheet == nil, !session.blocksInteraction, !FileCommands.shared.isBusy else { renameFile(nil); return }
+              !listHoldsPlace([visibleEntries[row]]), window?.attachedSheet == nil, !session.blocksInteraction, !FileCommands.shared.isBusy else { renameFile(nil); return }
         reveal(row)
         fileListView.layoutSubtreeIfNeeded()
         guard nameCell(at: row) != nil else { renameFile(nil); return }
@@ -2374,8 +2430,9 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
     @objc func trashFiles(_ sender: Any?) { FileCommands.shared.trash(changeableEntries(sender)) }
     @objc func compressFiles(_ sender: Any?) {
         let entries = changeableEntries(sender)
-        // A folder of the tree is compressed next to itself, not inside the folder open in the list.
-        let destination = fromTree(sender) ? entries.first?.url.deletingLastPathComponent() : session.history.current.url
+        // A folder of the tree, or of the favorites or the recent folders open in the list, is
+        // compressed next to itself, not inside the place open in the list.
+        let destination = fromTree(sender) || !locationHoldsItems ? entries.first?.url.deletingLastPathComponent() : session.history.current.url
         if let destination { FileCommands.shared.compress(entries, in: destination) }
     }
     @objc func extractFile(_ sender: Any?) { if let entry = commandEntries(sender).first { FileCommands.shared.extract(entry, in: session.history.current.url) } }
@@ -2529,6 +2586,13 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
         addressSuggestions.dismiss()
         if address.stringValue.lowercased().hasPrefix("smb:") {
             systemVolumes.connect(address.stringValue)
+            return
+        }
+        // A group of the tree shows its name in the address: that name, sent as it is, stays there.
+        let current = session.history.current.url
+        if !locationHoldsItems, address.stringValue == CloudAccounts.shared.address(for: current) {
+            navigate(.visit(current))
+            window?.makeFirstResponder(fileListView)
             return
         }
         guard let url = CloudAccounts.shared.resolve(address.stringValue) ?? AddressParser.resolve(address.stringValue, relativeTo: session.history.current.url) else {
@@ -2697,7 +2761,9 @@ final class ExplorerWindowController: NSWindowController, NSWindowDelegate, NSTa
             select.lineBreakMode = .byTruncatingMiddle
             select.alignment = .left
             select.font = ExplorerStyle.font(.bars)
-            select.image = ExplorerStyle.symbol(tab.session.isLoading ? "clock" : url.isFileURL ? "folder" : "cloud", description: L10n.text("kind.folder"))
+            let group = FolderShortcutGroup(url: url)
+            let symbol = tab.session.isLoading ? "clock" : url.isFileURL ? "folder" : group == .favorites ? "star" : group == .recents ? "clock.arrow.circlepath" : "cloud"
+            select.image = ExplorerStyle.symbol(symbol, description: group?.title ?? L10n.text("kind.folder"))
             select.imagePosition = .imageLeading
             select.toolTip = CloudAccounts.shared.address(for: url)
             select.setAccessibilityLabel(L10n.format(tab.id == workspace.activeID ? "tab.selected_accessibility" : "tab.accessibility", title))

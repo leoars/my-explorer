@@ -630,6 +630,8 @@
 "tree.recents" = "Recientes";
 "favorites.add" = "Añadir a favoritas";
 "favorites.remove" = "Quitar de favoritas";
+"favorites.empty" = "No hay carpetas favoritas. Usa Añadir a favoritas en el menú de una carpeta o arrastra carpetas a Favoritas en el árbol.";
+"recents.empty" = "No hay carpetas abiertas recientemente.";
 "favorites.add_current" = "Añadir esta carpeta";
 "favorites.remove_current" = "Quitar esta carpeta";
 "menu.favorite_folders" = "Carpetas favoritas";

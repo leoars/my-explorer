@@ -193,11 +193,13 @@ final class CloudAccounts {
         publish(updated, data: data)
     }
     func title(for url: URL) -> String {
+        if let group = FolderShortcutGroup(url: url) { return group.title }
         if url.scheme == RemoteLocation.scheme && (url.host == nil || url.host == "") { return L10n.text("cloud.title") }
         guard let location = RemoteLocation.parse(url), let connection = connections.first(where: { $0.id == location.connectionID }) else { return url.lastPathComponent }
         return location.key.isEmpty ? connection.name : url.lastPathComponent
     }
     func address(for url: URL) -> String {
+        if let group = FolderShortcutGroup(url: url) { return group.title }
         if url.scheme == RemoteLocation.scheme && (url.host == nil || url.host == "") { return L10n.text("cloud.title") }
         guard let location = RemoteLocation.parse(url), let connection = connections.first(where: { $0.id == location.connectionID }) else { return url.isFileURL ? url.path : url.absoluteString }
         let base: String
@@ -229,7 +231,34 @@ struct ApplicationDirectoryReader: DirectoryReading {
                 FileEntry(url: RemoteLocation.url(connectionID: connection.id), name: connection.name, isDirectory: true)
             }
         }
+        if let group = FolderShortcutGroup(url: url) { return try await Self.entries(of: group) }
         if url.isFileURL { return try await DirectoryReader(purpose: purpose).entries(at: url, showHidden: showHidden) }
         return try await AppAutomation.files.list(url, hidden: showHidden)
     }
+
+    /// The folders of the favorites or of the recent folders, in the tree's order: the favorites
+    /// as the person put them, the recent folders as the tree shows them. A favorite that is gone
+    /// stays, as in the tree; a recent folder that is gone is not one any more.
+    @MainActor
+    private static func folders(of group: FolderShortcutGroup) -> (folders: [URL], missing: Set<String>) {
+        let shortcuts = ExplorerStyle.folderShortcuts, presence = FolderPresence.shared
+        switch group {
+        case .favorites:
+            let favorites = shortcuts.favorites
+            return (favorites, Set(favorites.filter { !presence.exists($0) }.map(\.path)))
+        case .recents:
+            let recents = shortcuts.visibleRecents(exists: presence.exists)
+            return (FolderShortcutGroup.stableRecents(recents, shown: FolderTreeController.recentsAsShown ?? []), [])
+        }
+    }
+
+    private static func entries(of group: FolderShortcutGroup) async throws -> [FileEntry] {
+        let (folders, missing) = await folders(of: group)
+        return try await FolderShortcutGroup.entries(for: folders, missing: missing)
+    }
+}
+
+extension FolderShortcutGroup {
+    /// The group's name in the person's language, as in the tree.
+    @MainActor var title: String { L10n.text(self == .favorites ? "tree.favorites" : "tree.recents") }
 }

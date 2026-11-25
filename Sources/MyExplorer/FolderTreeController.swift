@@ -104,9 +104,12 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
     /// The places that are always there, from the home folder to the Trash.
     private var fixedRoots: [FolderNode]
     /// The person's favorite folders and the folders opened most recently, above the places.
-    let favoritesRoot = FolderNode(url: URL(string: "myexplorer-favorites:///")!, title: L10n.text("tree.favorites"), symbol: "favorite", isGroup: true)
-    let recentsRoot = FolderNode(url: URL(string: "myexplorer-recents:///")!, title: L10n.text("tree.recents"), symbol: "recent", isGroup: true)
+    let favoritesRoot = FolderNode(url: FolderShortcutGroup.favorites.url, title: L10n.text("tree.favorites"), symbol: "favorite", isGroup: true)
+    let recentsRoot = FolderNode(url: FolderShortcutGroup.recents.url, title: L10n.text("tree.recents"), symbol: "recent", isGroup: true)
     private var shortcutsShown: [FolderNode] = []
+    /// The recent folders in the order the tree last showed them, for the list that opens the
+    /// group (`FolderShortcutGroup.recents`); nil before any tree was built.
+    private(set) static var recentsAsShown: [URL]?
     private var shortcutsExpandedOnce = Set<ObjectIdentifier>()
     private var roots: [FolderNode] { shortcutsShown + fixedRoots }
     private let mobileRoot = FolderNode(url: URL(string: "myexplorer-devices:///")!, title: L10n.text("devices.title"), symbol: "iphone", isGroup: true)
@@ -202,14 +205,9 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
     /// order comes back when the tree is built again.
     func reloadShortcuts() {
         let shortcuts = ExplorerStyle.folderShortcuts
-        var recents = shortcuts.visibleRecents(exists: FolderPresence.shared.exists)
-        if let shown = recentsRoot.children?.map(\.url.explorerIdentity), !shown.isEmpty {
-            let current = Set(recents.map(\.explorerIdentity))
-            let staying = shown.filter(current.contains)
-            let fresh = recents.filter { !shown.contains($0.explorerIdentity) }
-            let byIdentity = Dictionary(recents.map { ($0.explorerIdentity, $0) }, uniquingKeysWith: { first, _ in first })
-            recents = fresh + staying.compactMap { byIdentity[$0] }
-        }
+        let recents = FolderShortcutGroup.stableRecents(shortcuts.visibleRecents(exists: FolderPresence.shared.exists),
+                                                        shown: recentsRoot.children?.map(\.url) ?? [])
+        Self.recentsAsShown = recents
         func fill(_ group: FolderNode, with urls: [URL]) {
             let previous = Dictionary((group.children ?? []).map { ($0.url.explorerIdentity, $0) }, uniquingKeysWith: { first, _ in first })
             let nodes = urls.map { url in
@@ -287,8 +285,12 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
             guard let location = RemoteLocation.parse(node.url), !location.key.isEmpty else { return nil }
         }
         // A place is protected wherever it shows: at the top, as a favorite or inside the home folder.
-        let isPlace = fixedRoots.contains { !$0.isGroup && $0.url.isFileURL && $0.url.explorerIdentity == node.url.explorerIdentity }
-        return (FileEntry(url: node.url, name: node.url.lastPathComponent, isDirectory: true, kind: "Folder"), isPlace)
+        return (FileEntry(url: node.url, name: node.url.lastPathComponent, isDirectory: true, kind: "Folder"), isPlace(node.url))
+    }
+
+    /// Whether the folder is one of the places at the top of the tree (the home folder, Documents...).
+    func isPlace(_ url: URL) -> Bool {
+        fixedRoots.contains { !$0.isGroup && $0.url.isFileURL && $0.url.explorerIdentity == url.explorerIdentity }
     }
 
     /// Whether the node is one of the favorites or recent folders, or a folder inside one of them.
@@ -554,10 +556,17 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
     }
 
     /// Selects the folder's row. Its place among the folders comes before a favorite or recent
-    /// shortcut to it, which is chosen only when the place is not open in the tree.
+    /// shortcut to it, which is chosen only when the place is not open in the tree. The favorites
+    /// or the recent folders opened in the list select their group.
     func selectIfVisible(_ url: URL) {
         selecting = true
         defer { selecting = false }
+        if let group = FolderShortcutGroup(url: url) {
+            let node = group == .favorites ? favoritesRoot : recentsRoot
+            let row = outline.row(forItem: node)
+            if row >= 0 { outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) } else { outline.deselectAll(nil) }
+            return
+        }
         var shortcut: Int?
         for row in 0..<outline.numberOfRows {
             guard let node = outline.item(atRow: row) as? FolderNode, !node.isGroup,
@@ -899,7 +908,13 @@ final class FolderTreeController: NSObject, NSOutlineViewDataSource, NSOutlineVi
             mobileDevices?.showWindow(nil)
             return
         }
-        if node === searchRoot || node === favoritesRoot || node === recentsRoot { outline.expandItem(node); return }
+        if node === searchRoot { outline.expandItem(node); return }
+        // As Quick access in Windows: the group opens in the list, with its folders, and in the tree.
+        if node === favoritesRoot || node === recentsRoot {
+            expandFromCode { outline.expandItem(node) }
+            onNavigate?(node.url)
+            return
+        }
         if let saved = node.savedSearch { onSavedSearch?(saved); return }
         if node.isGroup { onNavigate?(node.url); return }
         onNavigate?(node.url)

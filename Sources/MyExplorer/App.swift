@@ -1033,7 +1033,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 }
                 if arguments.contains("--shortcuts-smoke") {
                     try await testFolderShortcuts(root: root, browser: controller)
-                    print("SMOKE PASS: favorite and recent folders in the tree, context menus, Navigate menu with Control+1, stable recent order, options and excluded places")
+                    print("SMOKE PASS: favorite and recent folders in the tree, context menus, Navigate menu with Control+1, stable recent order, the two groups opened in the list, options and excluded places")
                     NSApp.terminate(nil)
                     return
                 }
@@ -4390,6 +4390,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // A Trash is never recorded.
         try await visit(trash)
         guard !shortcuts.visibleRecents().contains(where: { same($0, trash) }) else { throw SmokeFailure.failed("Trash recorded as recent") }
+
+        // Favorites selected in the tree opens the group in the list, as Quick access in Windows:
+        // the favorite folders in their order, a missing one faded, and the group's name in the
+        // address and the title.
+        let gone = root.appendingPathComponent("Gone")
+        try FileManager.default.createDirectory(at: gone, withIntermediateDirectories: true)
+        shortcuts.addFavorite(documents)
+        shortcuts.addFavorite(gone)
+        try FileManager.default.removeItem(at: gone)
+        let favoritesTitle = L10n.text("tree.favorites"), recentsTitle = L10n.text("tree.recents")
+        browser.window?.makeFirstResponder(outline)
+        outline.selectRowIndexes(IndexSet(integer: outline.row(forItem: tree.favoritesRoot)), byExtendingSelection: false)
+        try await waitForCondition("favorites listed") {
+            browser.session.history.current.url == FolderShortcutGroup.favorites.url && !browser.session.isLoading
+                && browser.visibleEntries.count == shortcuts.favorites.count
+        }
+        let favoriteRows = browser.visibleEntries.map(\.url)
+        guard shortcuts.favorites.count == 3, zip(favoriteRows, shortcuts.favorites).allSatisfy({ same($0, $1) }) else {
+            throw SmokeFailure.failed("Favorites list not in the group's order: \(favoriteRows.map(\.lastPathComponent))")
+        }
+        guard outline.item(atRow: outline.selectedRow) as AnyObject? === tree.favoritesRoot,
+              browser.address.stringValue == favoritesTitle, browser.window?.title.contains(favoritesTitle) == true,
+              browser.table.sortDescriptors.isEmpty, browser.session.history.current.url.explorerIsRoot else {
+            throw SmokeFailure.failed("Favorites location shown as \(browser.address.stringValue) / \(browser.window?.title ?? "")")
+        }
+        let name = browser.table.column(withIdentifier: NSUserInterfaceItemIdentifier("name"))
+        try await waitForCondition("missing favorite faded") {
+            (browser.table.view(atColumn: name, row: 2, makeIfNecessary: true)?.alphaValue ?? 1) < 1
+                && (browser.table.view(atColumn: name, row: 0, makeIfNecessary: true)?.alphaValue ?? 0) == 1
+        }
+        guard let listMenu = browser.table.menu else { throw SmokeFailure.failed("Missing list menu") }
+        browser.rebuildContextMenu(listMenu, entries: [browser.visibleEntries[2]])
+        guard listMenu.numberOfItems == 1, listMenu.items.first?.title == L10n.text("favorites.remove") else {
+            throw SmokeFailure.failed("Missing favorite menu: \(listMenu.items.map(\.title))")
+        }
+        // A favorite folder in the list has the commands it has elsewhere; nothing goes into the group itself.
+        browser.window?.makeFirstResponder(browser.fileListView)
+        browser.table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        for action in [#selector(ExplorerWindowController.properties(_:)), #selector(ExplorerWindowController.copyPath(_:)),
+                       #selector(ExplorerWindowController.openSelectedInNewTab(_:)), #selector(ExplorerWindowController.copyFiles(_:)),
+                       #selector(ExplorerWindowController.renameFile(_:))] {
+            guard browser.validateMenuItem(NSMenuItem(title: "", action: action, keyEquivalent: "")) else {
+                throw SmokeFailure.failed("Favorite command disabled in the group: \(action)")
+            }
+        }
+        // A place of the tree (Documents) is protected there as in the tree's groups.
+        browser.table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        guard browser.validateMenuItem(NSMenuItem(title: "", action: #selector(ExplorerWindowController.copyFiles(_:)), keyEquivalent: "")),
+              !browser.validateMenuItem(NSMenuItem(title: "", action: #selector(ExplorerWindowController.renameFile(_:)), keyEquivalent: "")),
+              !browser.validateMenuItem(NSMenuItem(title: "", action: #selector(ExplorerWindowController.trashFiles(_:)), keyEquivalent: "")) else {
+            throw SmokeFailure.failed("Place not protected in the favorites group")
+        }
+        browser.rebuildContextMenu(listMenu, entries: [])
+        for title in ["command.new_folder", "command.paste_files"] {
+            guard let item = listMenu.item(withTitle: L10n.text(title)), !browser.validateMenuItem(item) else {
+                throw SmokeFailure.failed("\(title) enabled in the favorites group")
+            }
+        }
+        // Removing a favorite from the list's menu takes it out of the list at once.
+        browser.rebuildContextMenu(listMenu, entries: [browser.visibleEntries[1]])
+        let removeFromList = listMenu.indexOfItem(withTitle: L10n.text("favorites.remove"))
+        guard removeFromList >= 0 else { throw SmokeFailure.failed("Missing Remove from favorites in the group's list") }
+        listMenu.performActionForItem(at: removeFromList)
+        try await waitForCondition("favorite removed from the list") {
+            !browser.session.isLoading && browser.visibleEntries.count == 2 && !browser.visibleEntries.contains { same($0.url, documents) }
+        }
+        // Enter opens the folder; Back comes back to the group.
+        browser.table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        browser.openSelected(nil)
+        try await waitForCondition("favorite opened from the list") { same(browser.session.history.current.url, archive) && !browser.session.isLoading }
+        browser.goBack(nil)
+        try await waitForCondition("back to the favorites") {
+            browser.session.history.current.url == FolderShortcutGroup.favorites.url && !browser.session.isLoading && browser.visibleEntries.count == 2
+        }
+        shortcuts.removeFavorite(gone)
+
+        // The recent folders, in the order the tree shows them.
+        browser.window?.makeFirstResponder(outline)
+        outline.selectRowIndexes(IndexSet(integer: outline.row(forItem: tree.recentsRoot)), byExtendingSelection: false)
+        try await waitForCondition("recent folders listed") {
+            browser.session.history.current.url == FolderShortcutGroup.recents.url && !browser.session.isLoading
+                && browser.visibleEntries.count == shown(tree.recentsRoot).count
+        }
+        let recentRows = browser.visibleEntries.map(\.url), treeRows = shown(tree.recentsRoot)
+        guard !recentRows.isEmpty, zip(recentRows, treeRows).allSatisfy({ same($0, $1) }),
+              outline.item(atRow: outline.selectedRow) as AnyObject? === tree.recentsRoot,
+              browser.address.stringValue == recentsTitle, browser.window?.title.contains(recentsTitle) == true else {
+            throw SmokeFailure.failed("Recent list \(recentRows.map(\.lastPathComponent)) vs tree \(treeRows.map(\.lastPathComponent))")
+        }
+        browser.window?.makeFirstResponder(browser.fileListView)
 
         // The options hide each group; clearing empties the recent folders, and their group goes.
         shortcuts.showRecents = false

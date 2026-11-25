@@ -630,6 +630,8 @@
 "tree.recents" = "Recent";
 "favorites.add" = "Add to Favorites";
 "favorites.remove" = "Remove from Favorites";
+"favorites.empty" = "No favorite folders. Use Add to Favorites on a folder's menu, or drag folders onto Favorites in the tree.";
+"recents.empty" = "No folders opened recently.";
 "favorites.add_current" = "Add This Folder";
 "favorites.remove_current" = "Remove This Folder";
 "menu.favorite_folders" = "Favorite Folders";

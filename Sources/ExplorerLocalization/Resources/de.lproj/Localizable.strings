@@ -630,6 +630,8 @@
 "tree.recents" = "Zuletzt geöffnet";
 "favorites.add" = "Zu Favoriten hinzufügen";
 "favorites.remove" = "Aus Favoriten entfernen";
+"favorites.empty" = "Keine Favoriten. Wählen Sie im Menü eines Ordners „Zu Favoriten hinzufügen“ oder ziehen Sie Ordner in der Baumansicht auf „Favoriten“.";
+"recents.empty" = "Keine kürzlich geöffneten Ordner.";
 "favorites.add_current" = "Diesen Ordner hinzufügen";
 "favorites.remove_current" = "Diesen Ordner entfernen";
 "menu.favorite_folders" = "Favorisierte Ordner";

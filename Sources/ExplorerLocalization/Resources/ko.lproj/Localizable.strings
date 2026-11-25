@@ -630,6 +630,8 @@
 "tree.recents" = "최근 폴더";
 "favorites.add" = "즐겨찾기에 추가";
 "favorites.remove" = "즐겨찾기에서 제거";
+"favorites.empty" = "즐겨찾기 폴더가 없습니다. 폴더 메뉴에서 즐겨찾기에 추가를 선택하거나 트리의 즐겨찾기로 폴더를 끌어 놓으세요.";
+"recents.empty" = "최근에 연 폴더가 없습니다.";
 "favorites.add_current" = "이 폴더 추가";
 "favorites.remove_current" = "이 폴더 제거";
 "menu.favorite_folders" = "즐겨찾는 폴더";

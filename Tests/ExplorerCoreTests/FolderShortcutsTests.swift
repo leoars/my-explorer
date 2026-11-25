@@ -180,4 +180,46 @@ struct FolderShortcutsTests {
         #expect(!FolderShortcuts.folderExists(file))
         #expect(!FolderShortcuts.folderExists(root.appendingPathComponent("gone")))
     }
+
+    @Test func groupLocationsAreRecognizedOnlyInTheirExactForm() {
+        #expect(FolderShortcutGroup(url: URL(string: "myexplorer-favorites:///")!) == .favorites)
+        #expect(FolderShortcutGroup(url: URL(string: "myexplorer-recents:///")!) == .recents)
+        #expect(FolderShortcutGroup(url: FolderShortcutGroup.favorites.url) == .favorites)
+        for value in ["myexplorer-favorites:///Users/a", "myexplorer-favorites://host/", "myexplorer-recents:///?q=1",
+                      "myexplorer-recents:///#x", "myexplorer-cloud:///", "myexplorer-search:///", "file:///"] {
+            #expect(FolderShortcutGroup(url: URL(string: value)!) == nil, "\(value)")
+        }
+        #expect(FolderShortcutGroup(url: url("/Users/a")) == nil)
+        // A tab left on a group is restored there, and nothing else is let through with it.
+        #expect(StartupPreferences.safeLocation(URL(string: "myexplorer-favorites:///")!) == FolderShortcutGroup.favorites.url)
+        #expect(StartupPreferences.safeLocation(URL(string: "myexplorer-recents:///")!) == FolderShortcutGroup.recents.url)
+        #expect(StartupPreferences.safeLocation(URL(string: "myexplorer-favorites:///etc/")!) == nil)
+        #expect(StartupPreferences.safeLocation(URL(string: "myexplorer-recents://user:secret@x/")!) == nil)
+        // The group is a place of its own, with no folder above it.
+        #expect(FolderShortcutGroup.favorites.url.explorerIsRoot)
+    }
+
+    @Test func recentFoldersKeepTheirRowsAndNewOnesGoOnTop() {
+        let a = url("/r/a"), b = url("/r/b"), c = url("/r/c"), d = url("/r/d")
+        #expect(FolderShortcutGroup.stableRecents([a, b, c], shown: []) == [a, b, c])
+        // b opened again: it stays where it was.
+        #expect(FolderShortcutGroup.stableRecents([b, a, c], shown: [a, b, c]) == [a, b, c])
+        // d is new: on top; c is no longer recent: gone.
+        #expect(FolderShortcutGroup.stableRecents([d, b, a], shown: [a, b, c]) == [d, a, b])
+    }
+
+    @Test func groupEntriesAreFoldersInTheGivenOrderWithMissingOnesKept() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("MyExplorer.ShortcutEntries.\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let zeta = root.appendingPathComponent("Zeta"), alpha = root.appendingPathComponent("Alpha")
+        try FileManager.default.createDirectory(at: zeta, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: alpha, withIntermediateDirectories: true)
+        let gone = root.appendingPathComponent("Gone")
+        let entries = try await FolderShortcutGroup.entries(for: [zeta, gone, alpha], missing: [gone.path])
+        #expect(entries.map(\.name) == ["Zeta", "Gone", "Alpha"])
+        #expect(entries.allSatisfy { $0.isDirectory && $0.canNavigate && $0.kind == "Folder" && $0.url.isFileURL })
+        #expect(entries[0].modified != nil && entries[1].modified == nil && entries[2].modified != nil)
+        #expect(entries.map(\.id) == [zeta.path, gone.path, alpha.path])
+        #expect(FolderShortcutGroup.entry(for: url("/"), missing: true).name == "/")
+    }
 }

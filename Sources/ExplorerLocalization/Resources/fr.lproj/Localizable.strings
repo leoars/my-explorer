@@ -630,6 +630,8 @@
 "tree.recents" = "Récents";
 "favorites.add" = "Ajouter aux favoris";
 "favorites.remove" = "Retirer des favoris";
+"favorites.empty" = "Aucun dossier favori. Utilisez Ajouter aux favoris dans le menu d’un dossier ou faites glisser des dossiers sur Favoris dans l’arborescence.";
+"recents.empty" = "Aucun dossier ouvert récemment.";
 "favorites.add_current" = "Ajouter ce dossier";
 "favorites.remove_current" = "Retirer ce dossier";
 "menu.favorite_folders" = "Dossiers favoris";

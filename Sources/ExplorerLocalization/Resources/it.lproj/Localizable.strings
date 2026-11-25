@@ -630,6 +630,8 @@
 "tree.recents" = "Recenti";
 "favorites.add" = "Aggiungi alle preferite";
 "favorites.remove" = "Rimuovi dalle preferite";
+"favorites.empty" = "Nessuna cartella preferita. Usa Aggiungi alle preferite nel menu di una cartella o trascina le cartelle su Preferite nell’albero.";
+"recents.empty" = "Nessuna cartella aperta di recente.";
 "favorites.add_current" = "Aggiungi questa cartella";
 "favorites.remove_current" = "Rimuovi questa cartella";
 "menu.favorite_folders" = "Cartelle preferite";

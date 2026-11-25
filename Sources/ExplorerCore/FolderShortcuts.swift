@@ -187,3 +187,63 @@ public final class FolderShortcuts {
 
     private func changed() { NotificationCenter.default.post(name: Self.didChange, object: self) }
 }
+
+/// The two groups of the tree, the favorites and the recent folders, opened as a place of the
+/// list, as Windows opens Quick access: a location of their own, `myexplorer-favorites:///` or
+/// `myexplorer-recents:///`, whose items are the folders of the group, in the group's order.
+public enum FolderShortcutGroup: String, Sendable, CaseIterable {
+    case favorites, recents
+
+    public var url: URL { URL(string: "myexplorer-\(rawValue):///")! }
+
+    /// The group a location names, and only in its one exact form (no host, user, port, query,
+    /// fragment or path); nil for anything else.
+    public init?(url: URL) {
+        guard url.user == nil, url.password == nil, url.port == nil, url.query == nil, url.fragment == nil,
+              url.host == nil || url.host == "",
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.percentEncodedPath == "/" || components.percentEncodedPath.isEmpty,
+              let group = Self.allCases.first(where: { "myexplorer-" + $0.rawValue == url.scheme?.lowercased() }) else { return nil }
+        self = group
+    }
+
+    /// The recent folders in the order the tree shows them: folders that were already there keep
+    /// their rows, so the group does not jump while it is in use, and folders new to the group go
+    /// on top, newest first. `recents` is the current list, newest first; `shown`, the rows as
+    /// they were. With nothing shown yet, the order is that of `recents`.
+    public static func stableRecents(_ recents: [URL], shown: [URL]) -> [URL] {
+        guard !shown.isEmpty else { return recents }
+        let shownIdentities = shown.map(\.explorerIdentity)
+        let current = Set(recents.map(\.explorerIdentity))
+        let staying = shownIdentities.filter(current.contains)
+        let known = Set(shownIdentities)
+        let fresh = recents.filter { !known.contains($0.explorerIdentity) }
+        let byIdentity = Dictionary(recents.map { ($0.explorerIdentity, $0) }, uniquingKeysWith: { first, _ in first })
+        return fresh + staying.compactMap { byIdentity[$0] }
+    }
+
+    /// One folder of a group as an item of the list: a folder with its date of change, or, when it
+    /// is gone (a favorite renamed, moved or on a volume that is not there), with no date. Reads
+    /// the disk for an existing folder; run it away from the main thread.
+    public nonisolated static func entry(for folder: URL, missing: Bool) -> FileEntry {
+        let url = URL(fileURLWithPath: folder.path, isDirectory: true)
+        let name = url.path == "/" ? "/" : url.lastPathComponent
+        let modified = missing ? nil : (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        return FileEntry(url: url, name: name, isDirectory: true, modified: modified, kind: "Folder")
+    }
+}
+
+extension FolderShortcutGroup {
+    /// The items of a group for the list, in the order given, read on the folder reader's workers
+    /// and with its time limit: a favorite on a volume that stopped answering cannot hold the
+    /// window back. `missing` holds the paths already known to be gone, which are not read.
+    public static func entries(for folders: [URL], missing: Set<String>) async throws -> [FileEntry] {
+        try Task.checkCancellation()
+        return try await DirectoryReadExecutor.foreground.run { request in
+            try folders.map { folder in
+                try request.checkCancellation()
+                return entry(for: folder, missing: missing.contains(folder.path))
+            }
+        }
+    }
+}
